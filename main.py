@@ -2,17 +2,15 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import psycopg2
-from urllib.parse import urlparse
 from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
 def get_db_conn():
-    db_url = os.environ.get('DATABASE_URL')
+    db_url = os.environ.get('DATABASE_URL', '').strip()
     if not db_url:
         raise Exception("DATABASE_URL no está definida")
-    # Convertir postgres:// -> postgresql://
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(db_url, sslmode='require')
@@ -37,7 +35,7 @@ def init_db():
 @app.route('/health')
 def health():
     try:
-        db_url = os.environ.get('DATABASE_URL', '')
+        db_url = os.environ.get('DATABASE_URL', '').strip()
         if not db_url:
             return jsonify({"status": "no DATABASE_URL"}), 503
         if db_url.startswith('https://api.render.com'):
@@ -49,21 +47,24 @@ def health():
 
 @app.route('/api/verify-code', methods=['POST'])
 def verify_code():
+    # Siempre válido por ahora
     return jsonify({"valid": True})
 
 @app.route('/api/crono', methods=['POST'])
 def crono():
     try:
-        # Solo procesar si la BD está lista
-        db_url = os.environ.get('DATABASE_URL', '')
+        db_url = os.environ.get('DATABASE_URL', '').strip()
         if not db_url or db_url.startswith('https://api.render.com'):
             return jsonify({"error": "base de datos no lista"}), 503
 
         init_db()
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON inválido"}), 400
+
         dorsal = data.get('dorsal', '').strip()
-        action = data.get('action', 'llegada').lower()
-        ts = data.get('timestamp', datetime.utcnow().isoformat())
+        action = data.get('action', 'llegada').strip().lower()
+        ts = data.get('timestamp', datetime.utcnow().isoformat()).strip()
         event = data.get('event_code', 'demo').strip()
 
         if not dorsal:
@@ -85,7 +86,7 @@ def crono():
 @app.route('/api/tiempos/<event>')
 def tiempos(event):
     try:
-        db_url = os.environ.get('DATABASE_URL', '')
+        db_url = os.environ.get('DATABASE_URL', '').strip()
         if not db_url or db_url.startswith('https://api.render.com'):
             return jsonify([])
 
