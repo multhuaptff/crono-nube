@@ -7,10 +7,12 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
-# === Configuración de la base de datos ===
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def init_db():
+    """Crea la tabla si no existe."""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL no está configurada")
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     cur.execute('''
@@ -27,7 +29,10 @@ def init_db():
     cur.close()
     conn.close()
 
-# === Rutas de la API ===
+# ✅ Asegurar que la BD esté lista al iniciar la app (importante en Render)
+with app.app_context():
+    init_db()
+
 @app.route('/health')
 def health():
     return jsonify({"status": "ok", "database": "connected"})
@@ -88,6 +93,5 @@ def obtener_tiempos(event_code):
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
