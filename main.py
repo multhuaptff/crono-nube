@@ -5,10 +5,10 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # Permite que tu app Flutter se conecte
+CORS(app)
 
 # === Configuración de la base de datos ===
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://localhost/crono_local')
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def init_db():
     conn = psycopg2.connect(DATABASE_URL)
@@ -32,6 +32,17 @@ def init_db():
 def health():
     return jsonify({"status": "ok", "database": "connected"})
 
+@app.route('/api/verify-code', methods=['POST'])
+def verify_code():
+    try:
+        data = request.get_json()
+        code = data.get('code', '').strip().upper()
+        if code and len(code) >= 3:
+            return jsonify({"valid": True, "message": "Código correcto"})
+        return jsonify({"valid": False, "message": "Código incorrecto"}), 400
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 400
+
 @app.route('/api/crono', methods=['POST'])
 def recibir_tiempo():
     try:
@@ -44,7 +55,6 @@ def recibir_tiempo():
         if not dorsal:
             return jsonify({"error": "dorsal requerido"}), 400
 
-        # Guardar en PostgreSQL
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         cur.execute(
@@ -65,7 +75,7 @@ def obtener_tiempos(event_code):
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s ORDER BY creado_en DESC", (event_code,))
+        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s ORDER BY creado_en ASC", (event_code,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -79,4 +89,5 @@ def obtener_tiempos(event_code):
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
