@@ -3,7 +3,7 @@ from flask_cors import CORS
 import psycopg2
 import os
 from datetime import datetime
-import dj_database_url
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 CORS(app)
@@ -12,18 +12,27 @@ def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
         raise Exception("DATABASE_URL no está configurada")
-    parsed = dj_database_url.parse(database_url)
-    return psycopg2.connect(
-        host=parsed['HOST'],
-        port=parsed['PORT'],
-        dbname=parsed['NAME'],
-        user=parsed['USER'],
-        password=parsed['PASSWORD'],
+    
+    # Parsear manualmente la URL de PostgreSQL
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    
+    if not database_url.startswith("postgresql://"):
+        # No es una URL de BD válida → Render puede estar en transición
+        raise Exception("DATABASE_URL no es una URL de PostgreSQL válida")
+    
+    parsed = urlparse(database_url)
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port,
+        dbname=parsed.path[1:],  # elimina la primera barra
+        user=parsed.username,
+        password=parsed.password,
         sslmode='require'
     )
+    return conn
 
 def ensure_table_exists():
-    """Crea la tabla solo si no existe. Se llama en cada endpoint."""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -62,7 +71,7 @@ def verify_code():
 @app.route('/api/crono', methods=['POST'])
 def recibir_tiempo():
     try:
-        ensure_table_exists()  # ← asegura que la tabla exista
+        ensure_table_exists()
         data = request.get_json()
         dorsal = data.get('dorsal', '').strip()
         action = data.get('action', 'llegada').strip().lower()
