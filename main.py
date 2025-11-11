@@ -3,20 +3,17 @@ from flask_cors import CORS
 import psycopg2
 import os
 from datetime import datetime
-import dj_database_url  # ← NUEVO
+import dj_database_url
 
 app = Flask(__name__)
 CORS(app)
 
-# === Obtener conexión a la base de datos ===
 def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
     if not database_url:
         raise Exception("DATABASE_URL no está configurada")
-    
-    # Convertir URL de Render a un formato usable por psycopg2
     parsed = dj_database_url.parse(database_url)
-    conn = psycopg2.connect(
+    return psycopg2.connect(
         host=parsed['HOST'],
         port=parsed['PORT'],
         dbname=parsed['NAME'],
@@ -24,9 +21,9 @@ def get_db_connection():
         password=parsed['PASSWORD'],
         sslmode='require'
     )
-    return conn
 
-def init_db():
+def ensure_table_exists():
+    """Crea la tabla solo si no existe. Se llama en cada endpoint."""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
@@ -43,13 +40,13 @@ def init_db():
     cur.close()
     conn.close()
 
-# Inicializar la base de datos al iniciar la app
-with app.app_context():
-    init_db()
-
 @app.route('/health')
 def health():
-    return jsonify({"status": "ok", "database": "connected"})
+    try:
+        ensure_table_exists()
+        return jsonify({"status": "ok", "database": "connected"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 @app.route('/api/verify-code', methods=['POST'])
 def verify_code():
@@ -65,6 +62,7 @@ def verify_code():
 @app.route('/api/crono', methods=['POST'])
 def recibir_tiempo():
     try:
+        ensure_table_exists()  # ← asegura que la tabla exista
         data = request.get_json()
         dorsal = data.get('dorsal', '').strip()
         action = data.get('action', 'llegada').strip().lower()
@@ -92,6 +90,7 @@ def recibir_tiempo():
 @app.route('/api/tiempos/<event_code>')
 def obtener_tiempos(event_code):
     try:
+        ensure_table_exists()
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s ORDER BY creado_en ASC", (event_code,))
