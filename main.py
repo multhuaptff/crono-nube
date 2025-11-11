@@ -3,17 +3,31 @@ from flask_cors import CORS
 import psycopg2
 import os
 from datetime import datetime
+import dj_database_url  # ← NUEVO
 
 app = Flask(__name__)
 CORS(app)
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+# === Obtener conexión a la base de datos ===
+def get_db_connection():
+    database_url = os.environ.get('DATABASE_URL')
+    if not database_url:
+        raise Exception("DATABASE_URL no está configurada")
+    
+    # Convertir URL de Render a un formato usable por psycopg2
+    parsed = dj_database_url.parse(database_url)
+    conn = psycopg2.connect(
+        host=parsed['HOST'],
+        port=parsed['PORT'],
+        dbname=parsed['NAME'],
+        user=parsed['USER'],
+        password=parsed['PASSWORD'],
+        sslmode='require'
+    )
+    return conn
 
 def init_db():
-    """Crea la tabla si no existe."""
-    if not DATABASE_URL:
-        raise Exception("DATABASE_URL no está configurada")
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = get_db_connection()
     cur = conn.cursor()
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tiempos (
@@ -29,7 +43,7 @@ def init_db():
     cur.close()
     conn.close()
 
-# ✅ Asegurar que la BD esté lista al iniciar la app (importante en Render)
+# Inicializar la base de datos al iniciar la app
 with app.app_context():
     init_db()
 
@@ -60,7 +74,7 @@ def recibir_tiempo():
         if not dorsal:
             return jsonify({"error": "dorsal requerido"}), 400
 
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
@@ -78,7 +92,7 @@ def recibir_tiempo():
 @app.route('/api/tiempos/<event_code>')
 def obtener_tiempos(event_code):
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s ORDER BY creado_en ASC", (event_code,))
         rows = cur.fetchall()
