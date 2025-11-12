@@ -47,7 +47,6 @@ def health():
 
 @app.route('/api/verify-code', methods=['POST'])
 def verify_code():
-    # Siempre válido por ahora
     return jsonify({"valid": True})
 
 @app.route('/api/crono', methods=['POST'])
@@ -99,6 +98,30 @@ def tiempos(event):
         return jsonify([
             {"dorsal": r[0], "action": r[1], "timestamp": r[2]} for r in rows
         ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# === NUEVO ENDPOINT: Eliminar evento en la nube ===
+@app.route('/api/flush-event/<event_code>', methods=['DELETE'])
+def flush_event(event_code):
+    """Elimina TODOS los tiempos de un evento (solo para pruebas/organización)."""
+    try:
+        if not event_code or event_code.strip() == "":
+            return jsonify({"error": "event_code requerido"}), 400
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tiempos WHERE evento = %s", (event_code.strip(),))
+        count = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            "status": "success",
+            "deleted": count,
+            "event_code": event_code
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
