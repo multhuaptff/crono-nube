@@ -32,6 +32,29 @@ def init_db():
     cur.close()
     conn.close()
 
+def init_db_inscritos():
+    """Inicializa la tabla de inscritos para sincronización con Streamlit"""
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS inscritos (
+            id SERIAL PRIMARY KEY,
+            event_code TEXT NOT NULL,
+            dorsal TEXT NOT NULL,
+            nombre TEXT NOT NULL,
+            categoria TEXT NOT NULL,
+            club TEXT NOT NULL,
+            rfid TEXT,
+            creado_en TIMESTAMP DEFAULT NOW()
+        )
+    ''')
+    cur.execute('''
+        CREATE INDEX IF NOT EXISTS idx_inscritos_event ON inscritos (event_code)
+    ''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
 @app.route('/health')
 def health():
     try:
@@ -41,6 +64,7 @@ def health():
         if db_url.startswith('https://api.render.com'):
             return jsonify({"status": "waiting for DB"}), 503
         init_db()
+        init_db_inscritos()
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 503
@@ -101,7 +125,81 @@ def tiempos(event):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === NUEVO ENDPOINT: Eliminar evento en la nube ===
+# === ENDPOINT: Recibir y servir lista de inscritos ===
+@app.route('/api/inscritos/<event_code>', methods=['POST'])
+def recibir_inscritos(event_code):
+    """Recibe lista de inscritos desde Streamlit (Inscripción)"""
+    try:
+        db_url = os.environ.get('DATABASE_URL', '').strip()
+        if not db_url or db_url.startswith('https://api.render.com'):
+            return jsonify({"error": "base de datos no lista"}), 503
+
+        init_db_inscritos()
+        data = request.get_json()
+        if not isinstance(data, list):
+            return jsonify({"error": "esperaba una lista"}), 400
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
+        
+        count = 0
+        for item in data:
+            dorsal = str(item.get('dorsal', '')).strip()
+            nombre = str(item.get('nombre', '')).strip()
+            categoria = str(item.get('categoria', '')).strip()
+            club = str(item.get('club', '')).strip()
+            rfid = str(item.get('rfid', '')).strip()
+            
+            if dorsal and nombre and categoria and club:
+                cur.execute('''
+                    INSERT INTO inscritos (event_code, dorsal, nombre, categoria, club, rfid)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (event_code.strip(), dorsal, nombre, categoria, club, rfid))
+                count += 1
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"status": "success", "count": count}), 201
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/inscritos/<event_code>', methods=['GET'])
+def obtener_inscritos(event_code):
+    """Devuelve lista de inscritos para Streamlit (Lista de Salida) y app móvil"""
+    try:
+        db_url = os.environ.get('DATABASE_URL', '').strip()
+        if not db_url or db_url.startswith('https://api.render.com'):
+            return jsonify([])
+
+        init_db_inscritos()
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT dorsal, nombre, categoria, club, rfid 
+            FROM inscritos 
+            WHERE event_code = %s 
+            ORDER BY dorsal
+        ''', (event_code.strip(),))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return jsonify([
+            {
+                "dorsal": r[0],
+                "nombre": r[1],
+                "categoria": r[2],
+                "club": r[3],
+                "rfid": r[4]
+            } for r in rows
+        ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# === ENDPOINT: Eliminar evento en la nube ===
 @app.route('/api/flush-event/<event_code>', methods=['DELETE'])
 def flush_event(event_code):
     """Elimina TODOS los tiempos de un evento (solo para pruebas/organización)."""
