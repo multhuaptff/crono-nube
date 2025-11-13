@@ -199,7 +199,7 @@ def obtener_inscritos(event_code):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === ENDPOINT: Eliminar evento en la nube ===
+# === ENDPOINT: Eliminar tiempos de un evento ===
 @app.route('/api/flush-event/<event_code>', methods=['DELETE'])
 def flush_event(event_code):
     """Elimina TODOS los tiempos de un evento (solo para pruebas/organización)."""
@@ -210,6 +210,30 @@ def flush_event(event_code):
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM tiempos WHERE evento = %s", (event_code.strip(),))
+        count = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            "status": "success",
+            "deleted": count,
+            "event_code": event_code
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# === ENDPOINT: Eliminar inscritos de un evento ===
+@app.route('/api/flush-inscritos/<event_code>', methods=['DELETE'])
+def flush_inscritos(event_code):
+    """Elimina TODOS los inscritos de un evento en la nube."""
+    try:
+        if not event_code or event_code.strip() == "":
+            return jsonify({"error": "event_code requerido"}), 400
+
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
         count = cur.rowcount
         conn.commit()
         cur.close()
