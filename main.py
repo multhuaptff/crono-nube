@@ -230,7 +230,7 @@ def home():
     <p>API activa en <code>/api/</code></p>
     '''
 
-# === Pantalla en vivo (HTML embebido) ===
+# === Pantalla en vivo (HTML embebido) — ✅ CORREGIDO ===
 @app.route('/pantalla')
 def pantalla_vivo():
     return '''
@@ -319,6 +319,11 @@ def pantalla_vivo():
                 data.forEach(p => inscritos[p.dorsal] = p);
                 document.getElementById('evento').textContent = `Evento: ${data.length} inscritos`;
                 renderizar();
+            })
+            .catch(err => {
+                console.error("Error al cargar inscritos:", err);
+                document.getElementById('evento').textContent = "Error al cargar inscritos";
+                renderizar();
             });
 
         // Cargar tiempos iniciales
@@ -326,6 +331,10 @@ def pantalla_vivo():
             .then(r => r.json())
             .then(tiempos => {
                 tiempos.forEach(t => procesar(t));
+                renderizar();
+            })
+            .catch(err => {
+                console.error("Error al cargar tiempos:", err);
                 renderizar();
             });
 
@@ -351,55 +360,78 @@ def pantalla_vivo():
             return 'Sin salida';
         }
 
+        // ✅ FUNCIÓN CORREGIDA: maneja fechas inválidas
         function tiempos(dorsal) {
             const r = registros[dorsal] || {salidas:[], llegadas:[]};
             if (!r.salidas.length || !r.llegadas.length) 
                 return {salida:'', llegada:'', total:''};
-            const s = new Date(r.salidas[0]), l = new Date(r.llegadas[0]);
+
+            const s = new Date(r.salidas[0]);
+            const l = new Date(r.llegadas[0]);
+            
+            // Verificar fechas válidas
+            if (isNaN(s.getTime()) || isNaN(l.getTime()))
+                return {salida:'', llegada:'', total:''};
+
             const total = Math.floor((l - s) / 1000);
-            const fmt = d => d.toISOString().split('T')[1].split('.')[0];
-            const fmtDur = sec => {
-                const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+            
+            const fmt = (d) => {
+                const pad = (n) => n.toString().padStart(2, '0');
+                return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+            };
+            
+            const fmtDur = (sec) => {
+                if (sec < 0) return '';
+                const h = Math.floor(sec / 3600);
+                const m = Math.floor((sec % 3600) / 60);
+                const s = sec % 60;
                 return h ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}` 
                          : `${m}:${s.toString().padStart(2,'0')}`;
             };
-            return {salida:fmt(s), llegada:fmt(l), total:fmtDur(total)};
+            
+            return {salida: fmt(s), llegada: fmt(l), total: fmtDur(total)};
         }
 
+        // ✅ RENDERIZADO CON MANEJO DE ERRORES
         function renderizar() {
-            const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
-            const filas = dorsales.map(d => {
-                const insc = inscritos[d];
-                const est = estado(d);
-                const t = tiempos(d);
-                const fuera = !insc;
-                return {
-                    d, nombre: fuera ? 'Fuera de lista' : (insc.nombre||''),
-                    cat: fuera ? '' : (insc.categoria||''),
-                    est, ...t, fuera
-                };
-            }).sort((a,b) => {
-                const ord = {'Sin salida':0, 'En carrera':1, 'Finalizado':2};
-                return (ord[a.est]-ord[b.est]) || a.cat.localeCompare(b.cat) || a.d.localeCompare(b.d,undefined,{numeric:true});
-            });
+            try {
+                const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
+                const filas = dorsales.map(d => {
+                    const insc = inscritos[d];
+                    const est = estado(d);
+                    const t = tiempos(d);
+                    const fuera = !insc;
+                    return {
+                        d, nombre: fuera ? 'Fuera de lista' : (insc.nombre||''),
+                        cat: fuera ? '' : (insc.categoria||''),
+                        est, ...t, fuera
+                    };
+                }).sort((a,b) => {
+                    const ord = {'Sin salida':0, 'En carrera':1, 'Finalizado':2};
+                    return (ord[a.est]-ord[b.est]) || a.cat.localeCompare(b.cat) || a.d.localeCompare(b.d,undefined,{numeric:true});
+                });
 
-            document.getElementById('cuerpo-tabla').innerHTML = filas.map(f => `
-                <tr class="${f.fuera?'fuera-lista':f.est==='Finalizado'?'finalizado':f.est==='En carrera'?'en-carrera':'sin-salida'}">
-                    <td data-label="Estado" class="estado">${f.est}</td>
-                    <td data-label="Dorsal">${f.d}${f.fuera?' 🚨':''}</td>
-                    <td data-label="Nombre">${f.nombre}</td>
-                    <td data-label="Categoría">${f.cat}</td>
-                    <td data-label="Salida">${f.salida}</td>
-                    <td data-label="Llegada">${f.llegada}</td>
-                    <td data-label="Total">${f.total}</td>
-                </tr>
-            `).join('');
+                document.getElementById('cuerpo-tabla').innerHTML = filas.map(f => `
+                    <tr class="${f.fuera?'fuera-lista':f.est==='Finalizado'?'finalizado':f.est==='En carrera'?'en-carrera':'sin-salida'}">
+                        <td data-label="Estado" class="estado">${f.est}</td>
+                        <td data-label="Dorsal">${f.d}${f.fuera?' 🚨':''}</td>
+                        <td data-label="Nombre">${f.nombre}</td>
+                        <td data-label="Categoría">${f.cat}</td>
+                        <td data-label="Salida">${f.salida}</td>
+                        <td data-label="Llegada">${f.llegada}</td>
+                        <td data-label="Total">${f.total}</td>
+                    </tr>
+                `).join('');
 
-            const total = filas.length;
-            const fin = filas.filter(f => f.est === 'Finalizado').length;
-            document.getElementById('total').textContent = total;
-            document.getElementById('finalizados').textContent = fin;
-            document.getElementById('en_carrera').textContent = total - fin;
+                const total = filas.length;
+                const fin = filas.filter(f => f.est === 'Finalizado').length;
+                document.getElementById('total').textContent = total;
+                document.getElementById('finalizados').textContent = fin;
+                document.getElementById('en_carrera').textContent = total - fin;
+            } catch (e) {
+                console.error("Error en renderizar:", e);
+                document.getElementById('cuerpo-tabla').innerHTML = `<tr><td colspan="7">Error al mostrar resultados</td></tr>`;
+            }
         }
 
         socket.on('connect', () => {
