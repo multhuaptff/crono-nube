@@ -299,7 +299,7 @@ def pantalla_vivo():
 </head>
 <body>
     <div class="header">
-        <h1>⏱️ CRONOMETRAJE EN VIVO -CronoAndes — Downhill MTB</h1>
+        <h1>⏱️ CRONOMETRAJE EN VIVO -CRONO-SPORT — Downhill MTB</h1>
         <div class="contador-maestro">⏰ Esperando primera salida...</div>
     </div>
 
@@ -335,22 +335,40 @@ def pantalla_vivo():
         let registros = {};
         let inscritos = {};
         let inicioOficial = null;
+        let intervalId = null;
 
-        function procesar(t) {
-            if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
-            if (t.action === 'salida') {
-                registros[t.dorsal].salidas.push(t.timestamp);
-                if (!inicioOficial) {
-                    inicioOficial = new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z'));
-                    actualizarContadorMaestro();
-                    setInterval(actualizarContadorMaestro, 1000);
-                }
-            } else if (t.action === 'llegada') {
-                registros[t.dorsal].llegadas.push(t.timestamp);
+        function calcularTiempoTranscurrido() {
+            if (!inicioOficial) return null;
+            const ahora = new Date();
+            return ahora - inicioOficial; // en milisegundos
+        }
+
+        function formatearCronometroMaestro(ms) {
+            if (ms == null) return '00.00';
+            const totalSegundos = ms / 1000;
+            const minutos = Math.floor(totalSegundos / 60);
+            const segundos = Math.floor(totalSegundos % 60);
+            const milis = Math.floor(ms % 1000);
+            return `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
+        }
+
+        function formatearTiempoCompetidor(ms) {
+            if (ms == null) return '';
+            const totalSegundos = ms / 1000;
+            const minutos = Math.floor(totalSegundos / 60);
+            const segundos = Math.floor(totalSegundos % 60);
+            const milis = Math.floor(ms % 1000);
+            return `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
+        }
+
+        function actualizarContadorMaestro() {
+            if (!inicioOficial) {
+                document.querySelector('.contador-maestro').textContent = '⏰ Esperando primera salida...';
+                return;
             }
-            if (t.nombre && !inscritos[t.dorsal]) {
-                inscritos[t.dorsal] = { dorsal: t.dorsal, nombre: t.nombre, categoria: t.categoria || '' };
-            }
+            const transcurridoMs = calcularTiempoTranscurrido();
+            const texto = `⏱️ En vivo: ${formatearCronometroMaestro(transcurridoMs)}`;
+            document.querySelector('.contador-maestro').textContent = texto;
         }
 
         function calcularTiempo(dorsal) {
@@ -359,27 +377,32 @@ def pantalla_vivo():
             const s = new Date((r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z'));
             const l = new Date((r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z'));
             if (isNaN(s) || isNaN(l) || l < s) return null;
-            return Math.floor((l - s) / 1000);
+            return l - s; // en milisegundos
         }
 
-        function formatearDuracion(sec) {
-            if (sec == null) return '';
-            const h = Math.floor(sec / 3600);
-            const m = Math.floor((sec % 3600) / 60);
-            const s = sec % 60;
-            return h > 0 
-                ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`
-                : `${m}:${s.toString().padStart(2,'0')}`;
-        }
-
-        function actualizarContadorMaestro() {
-            if (!inicioOficial) {
-                document.querySelector('.contador-maestro').textContent = '⏰ Esperando primera salida...';
-                return;
+        function procesar(t) {
+            if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
+            
+            if (t.action === 'salida') {
+                registros[t.dorsal].salidas.push(t.timestamp);
+                if (!inicioOficial) {
+                    // Solo activamos el cronómetro si la salida es "reciente" (últimos 15 segundos)
+                    const ahora = new Date();
+                    const salida = new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z'));
+                    const diferenciaMs = ahora - salida;
+                    if (diferenciaMs >= -15000 && diferenciaMs <= 15000) {
+                        inicioOficial = salida;
+                        if (intervalId) clearInterval(intervalId);
+                        intervalId = setInterval(actualizarContadorMaestro, 10); // actualización cada 10ms para suavidad
+                    }
+                }
+            } else if (t.action === 'llegada') {
+                registros[t.dorsal].llegadas.push(t.timestamp);
             }
-            const ahora = new Date();
-            const transcurrido = Math.floor((ahora - inicioOficial) / 1000);
-            document.querySelector('.contador-maestro').textContent = `⏱️ En vivo: ${formatearDuracion(transcurrido)}`;
+            
+            if (t.nombre && !inscritos[t.dorsal]) {
+                inscritos[t.dorsal] = { dorsal: t.dorsal, nombre: t.nombre, categoria: t.categoria || '' };
+            }
         }
 
         function renderizar() {
@@ -412,7 +435,7 @@ def pantalla_vivo():
                     <td>${f.dorsal}${f.fuera ? ' 🚨' : ''}</td>
                     <td>${f.nombre}</td>
                     <td>${f.categoria}</td>
-                    <td>${formatearDuracion(f.tiempo)}</td>
+                    <td>${formatearTiempoCompetidor(f.tiempo)}</td>
                 </tr>
             `).join('');
 
@@ -457,5 +480,3 @@ def health():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port)
-
-
