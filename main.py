@@ -292,8 +292,14 @@ def pantalla_vivo():
     </table>
 
     <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        let eventCode = urlParams.get('event_code');
+    document.addEventListener('DOMContentLoaded', function() {
+        // ✅ MÉTODO MÁS ROBUSTO PARA EXTRAER event_code
+        function getEventCodeFromUrl() {
+            const match = window.location.search.match(/event_code=([^&]*)/);
+            return match ? decodeURIComponent(match[1]) : null;
+        }
+
+        let eventCode = getEventCodeFromUrl();
         if (!eventCode) {
             eventCode = prompt("Ingresa el código del evento:");
             if (!eventCode) {
@@ -303,7 +309,7 @@ def pantalla_vivo():
                 history.replaceState(null, null, `?event_code=${encodeURIComponent(eventCode)}`);
             }
         }
-        document.getElementById('codigo').textContent = eventCode;
+        document.getElementById('codigo').textContent = eventCode || '-';
 
         const socket = io({transports: ['websocket']});
         socket.emit('subscribe', {event_code: eventCode});
@@ -360,7 +366,6 @@ def pantalla_vivo():
             return 'Sin salida';
         }
 
-        // ✅ FUNCIÓN CORREGIDA: maneja fechas inválidas
         function tiempos(dorsal) {
             const r = registros[dorsal] || {salidas:[], llegadas:[]};
             if (!r.salidas.length || !r.llegadas.length) 
@@ -368,18 +373,14 @@ def pantalla_vivo():
 
             const s = new Date(r.salidas[0]);
             const l = new Date(r.llegadas[0]);
-            
-            // Verificar fechas válidas
             if (isNaN(s.getTime()) || isNaN(l.getTime()))
                 return {salida:'', llegada:'', total:''};
 
             const total = Math.floor((l - s) / 1000);
-            
             const fmt = (d) => {
                 const pad = (n) => n.toString().padStart(2, '0');
                 return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
             };
-            
             const fmtDur = (sec) => {
                 if (sec < 0) return '';
                 const h = Math.floor(sec / 3600);
@@ -388,11 +389,9 @@ def pantalla_vivo():
                 return h ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}` 
                          : `${m}:${s.toString().padStart(2,'0')}`;
             };
-            
             return {salida: fmt(s), llegada: fmt(l), total: fmtDur(total)};
         }
 
-        // ✅ RENDERIZADO CON MANEJO DE ERRORES
         function renderizar() {
             try {
                 const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
@@ -437,6 +436,7 @@ def pantalla_vivo():
         socket.on('connect', () => {
             document.getElementById('ultima').textContent = 'Conectado';
         });
+    });
     </script>
     <script src="/socket.io/socket.io.js"></script>
 </body>
