@@ -230,7 +230,7 @@ def home():
     <p>API activa en <code>/api/</code></p>
     '''
 
-# === Pantalla en vivo (HTML embebido) — ✅ CORREGIDO Y COMPLETO PARA RENDER ===
+# === Pantalla en vivo (HTML embebido) — ✅ ESTÁNDARES UX/ISO PARA COMPETENCIA ===
 @app.route('/pantalla')
 def pantalla_vivo():
     return '''
@@ -241,53 +241,76 @@ def pantalla_vivo():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>⏱️ Cronometraje en Vivo — Downhill MTB</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: white; color: #2d3748; padding: 1rem; }
-        .header { text-align: center; margin-bottom: 1.5rem; }
-        .metrics { display: flex; gap: 1rem; margin-bottom: 1rem; font-size: 1.1em; flex-wrap: wrap; }
-        .metric { background: #f8f9fa; padding: 0.5rem 1rem; border-radius: 6px; min-width: 120px; text-align: center; }
-        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-        th { background: #2b7a78; color: white; position: sticky; top: 0; }
-        .finalizado { background-color: #d4edda !important; }
-        .en-carrera { background-color: #fff3cd !important; }
-        .sin-salida { background-color: #f8d7da !important; }
-        .fuera-lista { background-color: #ffebee !important; }
-        .estado { font-weight: bold; }
-        .contador { color: #e53e3e; font-weight: bold; margin-top: 0.5rem; }
-        .error { color: #c53030; background: #fed7d7; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
-        @media (max-width: 768px) {
-            table, thead, tbody, th, td, tr { display: block; }
-            thead tr { position: absolute; top: -9999px; left: -9999px; }
-            tr { border: 1px solid #ccc; margin-bottom: 10px; }
-            td { border: none; position: relative; padding-left: 50%; text-align: right; }
-            td:before { content: attr(data-label); position: absolute; left: 10px; width: 45%; text-align: left; font-weight: bold; }
+        body {
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: black;
+            color: white;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
         }
+        .header {
+            text-align: center;
+            padding: 1rem;
+            background: #1a202c;
+            border-bottom: 2px solid #2b7a78;
+        }
+        .header h1 {
+            font-size: 2.2rem;
+            margin: 0;
+            color: white;
+            text-shadow: 0 0 10px rgba(43, 122, 120, 0.7);
+        }
+        .contador-maestro {
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #68d391;
+            margin-top: 0.5rem;
+            font-family: 'Courier New', monospace;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+        th, td {
+            padding: 12px 8px;
+            text-align: center;
+            font-size: 1.3rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        th {
+            background: #2b7a78;
+            color: white;
+            position: sticky;
+            top: 0;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+        .finalizado { background-color: #2d3748 !important; color: #68d391 !important; }
+        .en-carrera { background-color: #2d3748 !important; color: #f6ad55 !important; }
+        .sin-salida { background-color: #2d3748 !important; color: #fc8181 !important; }
+        .fuera-lista { background-color: #4a5568 !important; color: #feb2b2 !important; }
+        .estado { font-weight: bold; }
+        tr:hover { opacity: 0.95; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>⏱️ Cronometraje en Vivo — Downhill MTB</h1>
-        <p><strong id="evento">Cargando...</strong> | Código: <code id="codigo">-</code></p>
-        <p class="contador">🔄 Última actualización: <span id="ultima">-</span></p>
-        <div id="error-container"></div>
-    </div>
-
-    <div class="metrics">
-        <div class="metric">Total: <strong id="total">0</strong></div>
-        <div class="metric">🏁 Finalizados: <strong id="finalizados">0</strong></div>
-        <div class="metric">🚴 En carrera: <strong id="en_carrera">0</strong></div>
+        <h1>⏱️ CRONOMETRAJE EN VIVO — Downhill MTB</h1>
+        <div class="contador-maestro">⏰ Esperando primera salida...</div>
     </div>
 
     <table id="tabla-tiempos">
         <thead>
             <tr>
-                <th>Estado</th>
+                <th>Pos</th>
                 <th>Dorsal</th>
                 <th>Nombre</th>
                 <th>Categoría</th>
-                <th>Salida</th>
-                <th>Llegada</th>
-                <th>Total</th>
+                <th>Tiempo</th>
             </tr>
         </thead>
         <tbody id="cuerpo-tabla"></tbody>
@@ -295,158 +318,124 @@ def pantalla_vivo():
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        function showError(msg) {
-            document.getElementById('error-container').innerHTML = `<div class="error">⚠️ ${msg}</div>`;
-        }
-
-        function getEventCodeFromUrl() {
-            const match = window.location.search.match(/event_code=([^&]*)/);
-            return match ? decodeURIComponent(match[1]) : null;
-        }
-
-        let eventCode = getEventCodeFromUrl();
+        const urlParams = new URLSearchParams(window.location.search);
+        let eventCode = urlParams.get('event_code');
         if (!eventCode) {
             eventCode = prompt("Ingresa el código del evento:");
             if (!eventCode) {
-                alert("Código requerido.");
-                location.href = "/";
-            } else {
-                history.replaceState(null, null, `?event_code=${encodeURIComponent(eventCode)}`);
+                document.body.innerHTML = '<div style="color:white;text-align:center;padding:4rem;font-size:1.5rem;background:black;">❌ Código requerido</div>';
+                return;
             }
+            window.history.replaceState(null, null, `?event_code=${encodeURIComponent(eventCode)}`);
         }
-        document.getElementById('codigo').textContent = eventCode;
 
-        const socket = io(window.location.origin, {
-            transports: ['websocket'],
-            autoConnect: true
-        });
-        socket.emit('subscribe', {event_code: eventCode});
+        const socket = io(window.location.origin, { transports: ['websocket'] });
+        socket.emit('subscribe', { event_code: eventCode });
 
         let registros = {};
         let inscritos = {};
+        let inicioOficial = null;
 
         function procesar(t) {
-            if (!registros[t.dorsal]) registros[t.dorsal] = {salidas:[], llegadas:[]};
-            if (t.action === 'salida') registros[t.dorsal].salidas.push(t.timestamp);
-            else if (t.action === 'llegada') registros[t.dorsal].llegadas.push(t.timestamp);
+            if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
+            if (t.action === 'salida') {
+                registros[t.dorsal].salidas.push(t.timestamp);
+                if (!inicioOficial) {
+                    inicioOficial = new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z'));
+                    actualizarContadorMaestro();
+                    setInterval(actualizarContadorMaestro, 1000);
+                }
+            } else if (t.action === 'llegada') {
+                registros[t.dorsal].llegadas.push(t.timestamp);
+            }
             if (t.nombre && !inscritos[t.dorsal]) {
-                inscritos[t.dorsal] = {dorsal:t.dorsal, nombre:t.nombre, categoria:t.categoria||''};
+                inscritos[t.dorsal] = { dorsal: t.dorsal, nombre: t.nombre, categoria: t.categoria || '' };
             }
         }
 
-        function estado(dorsal) {
-            const r = registros[dorsal] || {salidas:[], llegadas:[]};
-            if (r.salidas.length && r.llegadas.length) return 'Finalizado';
-            if (r.salidas.length) return 'En carrera';
-            return 'Sin salida';
+        function calcularTiempo(dorsal) {
+            const r = registros[dorsal] || { salidas: [], llegadas: [] };
+            if (!r.salidas.length || !r.llegadas.length) return null;
+            const s = new Date((r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z'));
+            const l = new Date((r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z'));
+            if (isNaN(s) || isNaN(l) || l < s) return null;
+            return Math.floor((l - s) / 1000);
         }
 
-        function tiempos(dorsal) {
-            const r = registros[dorsal] || {salidas:[], llegadas:[]};
-            if (!r.salidas.length || !r.llegadas.length) 
-                return {salida:'', llegada:'', total:''};
+        function formatearDuracion(sec) {
+            if (sec == null) return '';
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = sec % 60;
+            return h > 0 
+                ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`
+                : `${m}:${s.toString().padStart(2,'0')}`;
+        }
 
-            const sStr = r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z';
-            const lStr = r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z';
-            const s = new Date(sStr);
-            const l = new Date(lStr);
-            if (isNaN(s.getTime()) || isNaN(l.getTime()))
-                return {salida:'', llegada:'', total:''};
-
-            const totalSec = Math.floor((l - s) / 1000);
-            if (totalSec < 0) return {salida:'', llegada:'', total:'⚠️'};
-
-            const fmt = (d) => {
-                const pad = (n) => n.toString().padStart(2, '0');
-                return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
-            };
-            const fmtDur = (sec) => {
-                const h = Math.floor(sec / 3600);
-                const m = Math.floor((sec % 3600) / 60);
-                const s = sec % 60;
-                return h ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}` 
-                         : `${m}:${s.toString().padStart(2,'0')}`;
-            };
-            return {salida: fmt(s), llegada: fmt(l), total: fmtDur(totalSec)};
+        function actualizarContadorMaestro() {
+            if (!inicioOficial) {
+                document.querySelector('.contador-maestro').textContent = '⏰ Esperando primera salida...';
+                return;
+            }
+            const ahora = new Date();
+            const transcurrido = Math.floor((ahora - inicioOficial) / 1000);
+            document.querySelector('.contador-maestro').textContent = `⏱️ En vivo: ${formatearDuracion(transcurrido)}`;
         }
 
         function renderizar() {
-            try {
-                const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
-                const filas = dorsales.map(d => {
+            const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
+            
+            const finalizados = dorsales
+                .map(d => {
+                    const tiempo = calcularTiempo(d);
                     const insc = inscritos[d];
-                    const est = estado(d);
-                    const t = tiempos(d);
-                    const fuera = !insc;
                     return {
-                        d, nombre: fuera ? 'Fuera de lista' : (insc.nombre||''),
-                        cat: fuera ? '' : (insc.categoria||''),
-                        est, ...t, fuera
+                        dorsal: d,
+                        nombre: insc ? insc.nombre : 'Fuera de lista',
+                        categoria: insc ? insc.categoria : '',
+                        tiempo: tiempo,
+                        fuera: !insc
                     };
-                }).sort((a,b) => {
-                    const ord = {'Sin salida':0, 'En carrera':1, 'Finalizado':2};
-                    return (ord[a.est]-ord[b.est]) || a.cat.localeCompare(b.cat) || a.d.localeCompare(b.d,undefined,{numeric:true});
+                })
+                .filter(item => item.tiempo !== null)
+                .sort((a, b) => {
+                    if (a.tiempo !== b.tiempo) return a.tiempo - b.tiempo;
+                    if (a.categoria !== b.categoria) return a.categoria.localeCompare(b.categoria);
+                    return (parseInt(a.dorsal) || 0) - (parseInt(b.dorsal) || 0);
                 });
 
-                document.getElementById('cuerpo-tabla').innerHTML = filas.map(f => `
-                    <tr class="${f.fuera?'fuera-lista':f.est==='Finalizado'?'finalizado':f.est==='En carrera'?'en-carrera':'sin-salida'}">
-                        <td data-label="Estado" class="estado">${f.est}</td>
-                        <td data-label="Dorsal">${f.d}${f.fuera?' 🚨':''}</td>
-                        <td data-label="Nombre">${f.nombre}</td>
-                        <td data-label="Categoría">${f.cat}</td>
-                        <td data-label="Salida">${f.salida}</td>
-                        <td data-label="Llegada">${f.llegada}</td>
-                        <td data-label="Total">${f.total}</td>
-                    </tr>
-                `).join('');
+            finalizados.forEach((item, i) => item.pos = i + 1);
 
-                const total = filas.length;
-                const fin = filas.filter(f => f.est === 'Finalizado').length;
-                document.getElementById('total').textContent = total;
-                document.getElementById('finalizados').textContent = fin;
-                document.getElementById('en_carrera').textContent = total - fin;
-                document.getElementById('evento').textContent = `Evento: ${eventCode} (${total} corredores)`;
-            } catch (e) {
-                console.error("Error en renderizar:", e);
-                document.getElementById('cuerpo-tabla').innerHTML = `<tr><td colspan="7">Error al mostrar resultados</td></tr>`;
-            }
+            const filas = finalizados.map(f => `
+                <tr class="${f.fuera ? 'fuera-lista' : 'finalizado'}">
+                    <td>${f.pos}</td>
+                    <td>${f.dorsal}${f.fuera ? ' 🚨' : ''}</td>
+                    <td>${f.nombre}</td>
+                    <td>${f.categoria}</td>
+                    <td>${formatearDuracion(f.tiempo)}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById('cuerpo-tabla').innerHTML = filas || `
+                <tr><td colspan="5" style="color:#a0aec0;">Esperando primeros tiempos...</td></tr>
+            `;
         }
 
-        fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`)
-            .then(r => r.ok ? r.json() : [])
-            .then(data => {
-                inscritos = {};
-                data.forEach(p => inscritos[p.dorsal] = p);
-                renderizar();
-            })
-            .catch(() => renderizar());
-
-        fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`)
-            .then(r => {
-                if (!r.ok) throw new Error('API no disponible');
-                return r.json();
-            })
-            .then(tiempos => {
-                tiempos.forEach(t => procesar(t));
-                renderizar();
-            })
-            .catch(err => {
-                console.error("Error al cargar tiempos:", err);
-                showError("No se pudieron cargar los tiempos. Verifica el código del evento.");
-            });
+        Promise.all([
+            fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
+            fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
+        ]).then(([inscritosData, tiemposData]) => {
+            inscritos = {};
+            inscritosData.forEach(p => inscritos[p.dorsal] = p);
+            tiemposData.forEach(t => procesar(t));
+            renderizar();
+        }).catch(err => {
+            console.error("Error al cargar datos iniciales:", err);
+        });
 
         socket.on('nuevo_tiempo', (d) => {
             procesar(d);
-            document.getElementById('ultima').textContent = new Date().toLocaleTimeString();
             renderizar();
-        });
-
-        socket.on('connect', () => {
-            document.getElementById('ultima').textContent = 'Conectado';
-        });
-
-        socket.on('connect_error', () => {
-            showError("Modo offline: los nuevos tiempos no se mostrarán en tiempo real.");
         });
     });
     </script>
