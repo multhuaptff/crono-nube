@@ -7,9 +7,8 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, join_room
 import os
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
-import json
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -85,7 +84,17 @@ def crono():
 
         dorsal = str(data.get('dorsal', '')).strip()
         action = str(data.get('action', 'llegada')).strip().lower()
-        ts = str(data.get('timestamp', datetime.utcnow().isoformat())).strip()
+        # Asegurar timestamp en UTC con 'Z'
+        provided_ts = data.get('timestamp')
+        if provided_ts:
+            ts = str(provided_ts).strip()
+            # Asegurar que termine en 'Z' para UTC explícito
+            if not ts.endswith('Z') and '+' not in ts and 'Z' not in ts:
+                # Si no tiene zona, asumimos que es UTC y añadimos Z
+                ts = ts.rstrip() + 'Z'
+        else:
+            ts = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
         event_code = str(data.get('event_code', 'demo')).strip()
 
         if not dorsal or not event_code:
@@ -337,14 +346,8 @@ def pantalla_vivo():
         let inicioOficial = null;
         let intervalId = null;
 
-        function calcularTiempoTranscurrido() {
-            if (!inicioOficial) return null;
-            const ahora = new Date();
-            return ahora - inicioOficial; // en milisegundos
-        }
-
         function formatearCronometroMaestro(ms) {
-            if (ms == null) return '00.00';
+            if (ms == null || ms < 0) return '00:00.000';
             const totalSegundos = ms / 1000;
             const minutos = Math.floor(totalSegundos / 60);
             const segundos = Math.floor(totalSegundos % 60);
@@ -366,7 +369,8 @@ def pantalla_vivo():
                 document.querySelector('.contador-maestro').textContent = '⏰ Esperando primera salida...';
                 return;
             }
-            const transcurridoMs = calcularTiempoTranscurrido();
+            const ahora = new Date();
+            const transcurridoMs = ahora - inicioOficial;
             const texto = `⏱️ En vivo: ${formatearCronometroMaestro(transcurridoMs)}`;
             document.querySelector('.contador-maestro').textContent = texto;
         }
@@ -377,23 +381,22 @@ def pantalla_vivo():
             const s = new Date((r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z'));
             const l = new Date((r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z'));
             if (isNaN(s) || isNaN(l) || l < s) return null;
-            return l - s; // en milisegundos
+            return l - s;
         }
 
         function procesar(t) {
             if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
             
+            const tsNormalizado = t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z';
+            const eventoTime = new Date(tsNormalizado);
+
             if (t.action === 'salida') {
                 registros[t.dorsal].salidas.push(t.timestamp);
+                // Establecer inicioOficial con la PRIMERA salida absoluta (sin filtros)
                 if (!inicioOficial) {
-                    // Solo activamos el cronómetro si la salida es "reciente" (últimos 15 segundos)
-                    const ahora = new Date();
-                    const salida = new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z'));
-                    const diferenciaMs = ahora - salida;
-                    if (diferenciaMs >= -15000 && diferenciaMs <= 15000) {
-                        inicioOficial = salida;
-                        if (intervalId) clearInterval(intervalId);
-                        intervalId = setInterval(actualizarContadorMaestro, 10); // actualización cada 10ms para suavidad
+                    inicioOficial = eventoTime;
+                    if (!intervalId) {
+                        intervalId = setInterval(actualizarContadorMaestro, 20);
                     }
                 }
             } else if (t.action === 'llegada') {
