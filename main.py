@@ -169,9 +169,7 @@ def recibir_inscritos(event_code):
         event_code = event_code.strip()
         conn = get_db_conn()
         cur = conn.cursor()
-        # 1. Eliminar inscritos anteriores
         cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code,))
-        # 2. Insertar los nuevos
         count = 0
         for item in data:
             dorsal = str(item.get('dorsal', '')).strip()
@@ -472,7 +470,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
