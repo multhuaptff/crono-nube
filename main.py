@@ -230,7 +230,7 @@ def home():
     <p>API activa en <code>/api/</code></p>
     '''
 
-# === Pantalla en vivo (HTML embebido) — ✅ CORREGIDO ===
+# === Pantalla en vivo (HTML embebido) — ✅ CORREGIDO Y COMPLETO PARA RENDER ===
 @app.route('/pantalla')
 def pantalla_vivo():
     return '''
@@ -254,6 +254,7 @@ def pantalla_vivo():
         .fuera-lista { background-color: #ffebee !important; }
         .estado { font-weight: bold; }
         .contador { color: #e53e3e; font-weight: bold; margin-top: 0.5rem; }
+        .error { color: #c53030; background: #fed7d7; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
         @media (max-width: 768px) {
             table, thead, tbody, th, td, tr { display: block; }
             thead tr { position: absolute; top: -9999px; left: -9999px; }
@@ -268,6 +269,7 @@ def pantalla_vivo():
         <h1>⏱️ Cronometraje en Vivo — Downhill MTB</h1>
         <p><strong id="evento">Cargando...</strong> | Código: <code id="codigo">-</code></p>
         <p class="contador">🔄 Última actualización: <span id="ultima">-</span></p>
+        <div id="error-container"></div>
     </div>
 
     <div class="metrics">
@@ -293,7 +295,10 @@ def pantalla_vivo():
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        // ✅ MÉTODO MÁS ROBUSTO PARA EXTRAER event_code
+        function showError(msg) {
+            document.getElementById('error-container').innerHTML = `<div class="error">⚠️ ${msg}</div>`;
+        }
+
         function getEventCodeFromUrl() {
             const match = window.location.search.match(/event_code=([^&]*)/);
             return match ? decodeURIComponent(match[1]) : null;
@@ -309,46 +314,16 @@ def pantalla_vivo():
                 history.replaceState(null, null, `?event_code=${encodeURIComponent(eventCode)}`);
             }
         }
-        document.getElementById('codigo').textContent = eventCode || '-';
+        document.getElementById('codigo').textContent = eventCode;
 
-        const socket = io({transports: ['websocket']});
+        const socket = io(window.location.origin, {
+            transports: ['websocket'],
+            autoConnect: true
+        });
         socket.emit('subscribe', {event_code: eventCode});
 
         let registros = {};
         let inscritos = {};
-
-        // Cargar inscritos
-        fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`)
-            .then(r => r.json())
-            .then(data => {
-                inscritos = {};
-                data.forEach(p => inscritos[p.dorsal] = p);
-                document.getElementById('evento').textContent = `Evento: ${data.length} inscritos`;
-                renderizar();
-            })
-            .catch(err => {
-                console.error("Error al cargar inscritos:", err);
-                document.getElementById('evento').textContent = "Error al cargar inscritos";
-                renderizar();
-            });
-
-        // Cargar tiempos iniciales
-        fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`)
-            .then(r => r.json())
-            .then(tiempos => {
-                tiempos.forEach(t => procesar(t));
-                renderizar();
-            })
-            .catch(err => {
-                console.error("Error al cargar tiempos:", err);
-                renderizar();
-            });
-
-        socket.on('nuevo_tiempo', (d) => {
-            procesar(d);
-            document.getElementById('ultima').textContent = new Date().toLocaleTimeString();
-            renderizar();
-        });
 
         function procesar(t) {
             if (!registros[t.dorsal]) registros[t.dorsal] = {salidas:[], llegadas:[]};
@@ -371,25 +346,28 @@ def pantalla_vivo():
             if (!r.salidas.length || !r.llegadas.length) 
                 return {salida:'', llegada:'', total:''};
 
-            const s = new Date(r.salidas[0]);
-            const l = new Date(r.llegadas[0]);
+            const sStr = r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z';
+            const lStr = r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z';
+            const s = new Date(sStr);
+            const l = new Date(lStr);
             if (isNaN(s.getTime()) || isNaN(l.getTime()))
                 return {salida:'', llegada:'', total:''};
 
-            const total = Math.floor((l - s) / 1000);
+            const totalSec = Math.floor((l - s) / 1000);
+            if (totalSec < 0) return {salida:'', llegada:'', total:'⚠️'};
+
             const fmt = (d) => {
                 const pad = (n) => n.toString().padStart(2, '0');
-                return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+                return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
             };
             const fmtDur = (sec) => {
-                if (sec < 0) return '';
                 const h = Math.floor(sec / 3600);
                 const m = Math.floor((sec % 3600) / 60);
                 const s = sec % 60;
                 return h ? `${h}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}` 
                          : `${m}:${s.toString().padStart(2,'0')}`;
             };
-            return {salida: fmt(s), llegada: fmt(l), total: fmtDur(total)};
+            return {salida: fmt(s), llegada: fmt(l), total: fmtDur(totalSec)};
         }
 
         function renderizar() {
@@ -427,18 +405,52 @@ def pantalla_vivo():
                 document.getElementById('total').textContent = total;
                 document.getElementById('finalizados').textContent = fin;
                 document.getElementById('en_carrera').textContent = total - fin;
+                document.getElementById('evento').textContent = `Evento: ${eventCode} (${total} corredores)`;
             } catch (e) {
                 console.error("Error en renderizar:", e);
                 document.getElementById('cuerpo-tabla').innerHTML = `<tr><td colspan="7">Error al mostrar resultados</td></tr>`;
             }
         }
 
+        fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`)
+            .then(r => r.ok ? r.json() : [])
+            .then(data => {
+                inscritos = {};
+                data.forEach(p => inscritos[p.dorsal] = p);
+                renderizar();
+            })
+            .catch(() => renderizar());
+
+        fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`)
+            .then(r => {
+                if (!r.ok) throw new Error('API no disponible');
+                return r.json();
+            })
+            .then(tiempos => {
+                tiempos.forEach(t => procesar(t));
+                renderizar();
+            })
+            .catch(err => {
+                console.error("Error al cargar tiempos:", err);
+                showError("No se pudieron cargar los tiempos. Verifica el código del evento.");
+            });
+
+        socket.on('nuevo_tiempo', (d) => {
+            procesar(d);
+            document.getElementById('ultima').textContent = new Date().toLocaleTimeString();
+            renderizar();
+        });
+
         socket.on('connect', () => {
             document.getElementById('ultima').textContent = 'Conectado';
         });
+
+        socket.on('connect_error', () => {
+            showError("Modo offline: los nuevos tiempos no se mostrarán en tiempo real.");
+        });
     });
     </script>
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </body>
 </html>
     '''
