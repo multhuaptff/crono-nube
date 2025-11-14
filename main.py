@@ -299,7 +299,7 @@ def pantalla_vivo():
 </head>
 <body>
     <div class="header">
-        <h1>⏱️ CRONOMETRAJE EN VIVO — Downhill MTB</h1>
+        <h1>⏱️ CRONOMETRAJE EN VIVO -CRONO-SPORT — Downhill MTB</h1>
         <div class="contador-maestro">⏰ Esperando primera salida...</div>
     </div>
 
@@ -457,3 +457,4 @@ def health():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port)
+
