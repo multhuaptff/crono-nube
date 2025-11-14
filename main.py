@@ -1,8 +1,8 @@
 # main.py
-# ¡Este archivo reemplaza completamente a Streamlit!
-# Despliéguelo en Render como aplicación web estándar (no Streamlit)
+# Aplicación oficial: CronoAndes
+# Sistema de cronometraje deportivo en tiempo real – Formato Copa del Mundo
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room
 import os
@@ -73,7 +73,7 @@ def on_subscribe(data):
         join_room(event_code)
         logging.info(f"Cliente {request.sid} suscrito a evento: {event_code}")
 
-# === API: Recibir y servir tiempos ===
+# === API: Recibir tiempos ===
 @app.route('/api/crono', methods=['POST'])
 def crono():
     try:
@@ -228,13 +228,8 @@ def home():
     return '''
     <h2>⏱️ CronoAndes - Sistema de Cronometraje Profesional</h2>
     <p>Este sistema está en modo <strong>TIEMPO REAL</strong>.</p>
-    <p>Para ver la pantalla en vivo, ve a: 
-       <a href="/pantalla?event_code=TU_CODIGO">/pantalla?event_code=TU_CODIGO</a>
-    </p>
-    <p>✅ Compatible con formato Copa del Mundo<br>
-       ✅ Soporta logo personalizado (parámetro logo_url)<br>
-       ✅ Resultados agrupados por categoría</p>
-    <p>API activa en <code>/api/</code></p>
+    <p>Accede a la <a href="/pantalla?event_code=TU_CODIGO">pantalla en vivo</a> para ver resultados.</p>
+    <p>✅ Formato Copa del Mundo<br>✅ Logo personalizable<br>✅ Agrupado por categoría</p>
     '''
 
 # === Pantalla en vivo — CRONOANDES (Formato Copa del Mundo) ===
@@ -246,7 +241,7 @@ def pantalla_vivo():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⏱️ CronoAndes — Copa del Mundo</title>
+    <title>🏆 CronoAndes — Resultados en Vivo</title>
     <style>
         body {
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
@@ -272,11 +267,6 @@ def pantalla_vivo():
             margin: 0.5rem 0;
             color: white;
             text-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
-        }
-        .evento-info {
-            font-size: 1.1rem;
-            color: #cbd5e1;
-            margin-top: 0.3rem;
         }
         .contador-maestro {
             font-size: 1.3rem;
@@ -335,8 +325,7 @@ def pantalla_vivo():
 <body>
     <div class="header">
         <img id="logo" class="logo" style="display:none;">
-        <h1>🏆 CronoAndes — Copa del Mundo</h1>
-        <div class="evento-info" id="evento-info">Evento: <span id="event-code-display"></span></div>
+        <h1>🏆 CronoAndes — Resultados en Vivo</h1>
         <div class="contador-maestro">⏰ Esperando primera salida...</div>
     </div>
     <div id="contenedor-categorias"></div>
@@ -363,8 +352,6 @@ def pantalla_vivo():
             if (logoUrl) newUrl += `&logo_url=${encodeURIComponent(logoUrl)}`;
             window.history.replaceState(null, null, newUrl);
         }
-
-        document.getElementById('event-code-display').textContent = eventCode;
 
         const socket = io(window.location.origin, { transports: ['websocket'] });
         socket.emit('subscribe', { event_code: eventCode });
