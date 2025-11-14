@@ -13,7 +13,7 @@ import logging
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'downhill-secure-key-2025')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cronoandes-secure-key-2025')
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
@@ -84,13 +84,10 @@ def crono():
 
         dorsal = str(data.get('dorsal', '')).strip()
         action = str(data.get('action', 'llegada')).strip().lower()
-        # Asegurar timestamp en UTC con 'Z'
         provided_ts = data.get('timestamp')
         if provided_ts:
             ts = str(provided_ts).strip()
-            # Asegurar que termine en 'Z' para UTC explícito
             if not ts.endswith('Z') and '+' not in ts and 'Z' not in ts:
-                # Si no tiene zona, asumimos que es UTC y añadimos Z
                 ts = ts.rstrip() + 'Z'
         else:
             ts = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -108,7 +105,6 @@ def crono():
         )
         conn.commit()
 
-        # Obtener datos del participante
         cur.execute('''
             SELECT nombre, categoria FROM inscritos 
             WHERE event_code = %s AND dorsal = %s
@@ -120,7 +116,6 @@ def crono():
         cur.close()
         conn.close()
 
-        # Emitir en tiempo real
         socketio.emit('nuevo_tiempo', {
             'event_code': event_code,
             'dorsal': dorsal,
@@ -227,19 +222,22 @@ def flush_inscritos(event_code):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === Página principal: redirige a pantalla en vivo ===
+# === Página principal ===
 @app.route('/')
 def home():
     return '''
-    <h2>⏱️ Cronometraje Pro - Downhill MTB</h2>
+    <h2>⏱️ CronoAndes - Sistema de Cronometraje Profesional</h2>
     <p>Este sistema está en modo <strong>TIEMPO REAL</strong>.</p>
     <p>Para ver la pantalla en vivo, ve a: 
-       <a href="/pantalla">/pantalla?event_code=TU_CODIGO</a>
+       <a href="/pantalla?event_code=TU_CODIGO">/pantalla?event_code=TU_CODIGO</a>
     </p>
+    <p>✅ Compatible con formato Copa del Mundo<br>
+       ✅ Soporta logo personalizado (parámetro logo_url)<br>
+       ✅ Resultados agrupados por categoría</p>
     <p>API activa en <code>/api/</code></p>
     '''
 
-# === Pantalla en vivo (HTML embebido) — ✅ ESTÁNDARES UX/ISO PARA COMPETENCIA ===
+# === Pantalla en vivo — CRONOANDES (Formato Copa del Mundo) ===
 @app.route('/pantalla')
 def pantalla_vivo():
     return '''
@@ -248,11 +246,11 @@ def pantalla_vivo():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⏱️ Cronometraje en Vivo — Downhill MTB</title>
+    <title>⏱️ CronoAndes — Copa del Mundo</title>
     <style>
         body {
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-            background: black;
+            background: #0f172a;
             color: white;
             margin: 0;
             padding: 0;
@@ -261,82 +259,112 @@ def pantalla_vivo():
         .header {
             text-align: center;
             padding: 1rem;
-            background: #1a202c;
-            border-bottom: 2px solid #2b7a78;
+            background: #1e293b;
+            border-bottom: 3px solid #38bdf8;
+        }
+        .logo {
+            max-height: 70px;
+            margin-bottom: 12px;
+            border-radius: 6px;
         }
         .header h1 {
-            font-size: 2.2rem;
-            margin: 0;
+            font-size: 2.0rem;
+            margin: 0.5rem 0;
             color: white;
-            text-shadow: 0 0 10px rgba(43, 122, 120, 0.7);
+            text-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+        }
+        .evento-info {
+            font-size: 1.1rem;
+            color: #cbd5e1;
+            margin-top: 0.3rem;
         }
         .contador-maestro {
-            font-size: 1.4rem;
+            font-size: 1.3rem;
             font-weight: bold;
-            color: #68d391;
+            color: #60a5fa;
             margin-top: 0.5rem;
             font-family: 'Courier New', monospace;
+        }
+        .categoria-seccion {
+            margin: 2rem 1rem;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            background: #1e293b;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .categoria-titulo {
+            background: #0f172a;
+            color: #f8fafc;
+            padding: 14px;
+            font-size: 1.5rem;
+            font-weight: bold;
+            text-align: center;
+            border-bottom: 2px solid #38bdf8;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             table-layout: fixed;
+            margin-top: 8px;
         }
         th, td {
-            padding: 12px 8px;
+            padding: 12px 10px;
             text-align: center;
-            font-size: 1.3rem;
+            font-size: 1.2rem;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
         th {
-            background: #2b7a78;
-            color: white;
-            position: sticky;
-            top: 0;
+            background: #0f172a;
+            color: #94a3b8;
             font-weight: bold;
-            font-size: 1.2rem;
+            font-size: 1.1rem;
         }
-        .finalizado { background-color: #2d3748 !important; color: #68d391 !important; }
-        .en-carrera { background-color: #2d3748 !important; color: #f6ad55 !important; }
-        .sin-salida { background-color: #2d3748 !important; color: #fc8181 !important; }
-        .fuera-lista { background-color: #4a5568 !important; color: #feb2b2 !important; }
-        .estado { font-weight: bold; }
-        tr:hover { opacity: 0.95; }
+        .finalizado {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+        }
+        .pos { width: 8%; }
+        .dorsal { width: 15%; }
+        .nombre { width: 35%; }
+        .categoria-col { width: 22%; }
+        .tiempo { width: 20%; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>⏱️ CRONOMETRAJE EN VIVO -CRONO-SPORT — Downhill MTB</h1>
+        <img id="logo" class="logo" style="display:none;">
+        <h1>🏆 CronoAndes — Copa del Mundo</h1>
+        <div class="evento-info" id="evento-info">Evento: <span id="event-code-display"></span></div>
         <div class="contador-maestro">⏰ Esperando primera salida...</div>
     </div>
-
-    <table id="tabla-tiempos">
-        <thead>
-            <tr>
-                <th>Pos</th>
-                <th>Dorsal</th>
-                <th>Nombre</th>
-                <th>Categoría</th>
-                <th>Tiempo</th>
-            </tr>
-        </thead>
-        <tbody id="cuerpo-tabla"></tbody>
-    </table>
+    <div id="contenedor-categorias"></div>
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         const urlParams = new URLSearchParams(window.location.search);
         let eventCode = urlParams.get('event_code');
+        const logoUrl = urlParams.get('logo_url');
+
+        if (logoUrl) {
+            const img = document.getElementById('logo');
+            img.src = logoUrl;
+            img.style.display = 'block';
+        }
+
         if (!eventCode) {
             eventCode = prompt("Ingresa el código del evento:");
             if (!eventCode) {
-                document.body.innerHTML = '<div style="color:white;text-align:center;padding:4rem;font-size:1.5rem;background:black;">❌ Código requerido</div>';
+                document.body.innerHTML = '<div style="color:white;text-align:center;padding:4rem;font-size:1.5rem;background:#0f172a;">❌ Código del evento requerido</div>';
                 return;
             }
-            window.history.replaceState(null, null, `?event_code=${encodeURIComponent(eventCode)}`);
+            let newUrl = `${window.location.pathname}?event_code=${encodeURIComponent(eventCode)}`;
+            if (logoUrl) newUrl += `&logo_url=${encodeURIComponent(logoUrl)}`;
+            window.history.replaceState(null, null, newUrl);
         }
+
+        document.getElementById('event-code-display').textContent = eventCode;
 
         const socket = io(window.location.origin, { transports: ['websocket'] });
         socket.emit('subscribe', { event_code: eventCode });
@@ -349,30 +377,19 @@ def pantalla_vivo():
         function formatearCronometroMaestro(ms) {
             if (ms == null || ms < 0) return '00:00.000';
             const totalSegundos = ms / 1000;
-            const minutos = Math.floor(totalSegundos / 60);
-            const segundos = Math.floor(totalSegundos % 60);
+            const mins = Math.floor(totalSegundos / 60);
+            const segs = Math.floor(totalSegundos % 60);
             const milis = Math.floor(ms % 1000);
-            return `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
+            return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
         function formatearTiempoCompetidor(ms) {
             if (ms == null) return '';
             const totalSegundos = ms / 1000;
-            const minutos = Math.floor(totalSegundos / 60);
-            const segundos = Math.floor(totalSegundos % 60);
+            const mins = Math.floor(totalSegundos / 60);
+            const segs = Math.floor(totalSegundos % 60);
             const milis = Math.floor(ms % 1000);
-            return `${minutos.toString().padStart(2, '0')}:${segundos.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
-        }
-
-        function actualizarContadorMaestro() {
-            if (!inicioOficial) {
-                document.querySelector('.contador-maestro').textContent = '⏰ Esperando primera salida...';
-                return;
-            }
-            const ahora = new Date();
-            const transcurridoMs = ahora - inicioOficial;
-            const texto = `⏱️ En vivo: ${formatearCronometroMaestro(transcurridoMs)}`;
-            document.querySelector('.contador-maestro').textContent = texto;
+            return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
         function calcularTiempo(dorsal) {
@@ -386,65 +403,96 @@ def pantalla_vivo():
 
         function procesar(t) {
             if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
-            
-            const tsNormalizado = t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z';
-            const eventoTime = new Date(tsNormalizado);
+            const tsNorm = t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z';
+            const eventoTime = new Date(tsNorm);
 
             if (t.action === 'salida') {
                 registros[t.dorsal].salidas.push(t.timestamp);
-                // Establecer inicioOficial con la PRIMERA salida absoluta (sin filtros)
                 if (!inicioOficial) {
                     inicioOficial = eventoTime;
                     if (!intervalId) {
-                        intervalId = setInterval(actualizarContadorMaestro, 20);
+                        intervalId = setInterval(() => {
+                            if (inicioOficial) {
+                                const ahora = new Date();
+                                const transcurrido = ahora - inicioOficial;
+                                document.querySelector('.contador-maestro').textContent = 
+                                    `⏱️ En vivo: ${formatearCronometroMaestro(transcurrido)}`;
+                            }
+                        }, 20);
                     }
                 }
             } else if (t.action === 'llegada') {
                 registros[t.dorsal].llegadas.push(t.timestamp);
             }
-            
+
             if (t.nombre && !inscritos[t.dorsal]) {
-                inscritos[t.dorsal] = { dorsal: t.dorsal, nombre: t.nombre, categoria: t.categoria || '' };
+                inscritos[t.dorsal] = {
+                    dorsal: t.dorsal,
+                    nombre: t.nombre,
+                    categoria: t.categoria || 'SIN CATEGORÍA'
+                };
             }
         }
 
         function renderizar() {
-            const dorsales = [...new Set([...Object.keys(registros), ...Object.keys(inscritos)])];
-            
-            const finalizados = dorsales
-                .map(d => {
-                    const tiempo = calcularTiempo(d);
-                    const insc = inscritos[d];
-                    return {
-                        dorsal: d,
-                        nombre: insc ? insc.nombre : 'Fuera de lista',
-                        categoria: insc ? insc.categoria : '',
-                        tiempo: tiempo,
-                        fuera: !insc
-                    };
-                })
-                .filter(item => item.tiempo !== null)
-                .sort((a, b) => {
-                    if (a.tiempo !== b.tiempo) return a.tiempo - b.tiempo;
-                    if (a.categoria !== b.categoria) return a.categoria.localeCompare(b.categoria);
-                    return (parseInt(a.dorsal) || 0) - (parseInt(b.dorsal) || 0);
+            const competidores = Object.keys(inscritos).map(d => {
+                const tiempo = calcularTiempo(d);
+                return tiempo !== null ? {
+                    dorsal: d,
+                    nombre: inscritos[d].nombre,
+                    categoria: inscritos[d].categoria,
+                    tiempo: tiempo
+                } : null;
+            }).filter(Boolean);
+
+            const porCategoria = {};
+            competidores.forEach(c => {
+                if (!porCategoria[c.categoria]) porCategoria[c.categoria] = [];
+                porCategoria[c.categoria].push(c);
+            });
+
+            Object.keys(porCategoria).forEach(cat => {
+                porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
+            });
+
+            const categoriasOrdenadas = Object.keys(porCategoria).sort();
+
+            let html = '';
+            if (categoriasOrdenadas.length === 0) {
+                html = '<div style="text-align:center;padding:2.5rem;color:#94a3b8;font-size:1.2rem;">Esperando primeros tiempos...</div>';
+            } else {
+                categoriasOrdenadas.forEach(cat => {
+                    const filas = porCategoria[cat].map(f => `
+                        <tr class="finalizado">
+                            <td class="pos">${f.pos}</td>
+                            <td class="dorsal">${f.dorsal}</td>
+                            <td class="nombre">${f.nombre}</td>
+                            <td class="categoria-col">${f.categoria}</td>
+                            <td class="tiempo">${formatearTiempoCompetidor(f.tiempo)}</td>
+                        </tr>
+                    `).join('');
+                    html += `
+                        <div class="categoria-seccion">
+                            <div class="categoria-titulo">${cat}</div>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="pos">Pos</th>
+                                        <th class="dorsal">Dorsal</th>
+                                        <th class="nombre">Nombre</th>
+                                        <th class="categoria-col">Categoría</th>
+                                        <th class="tiempo">Tiempo</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${filas}</tbody>
+                            </table>
+                        </div>
+                    `;
                 });
+            }
 
-            finalizados.forEach((item, i) => item.pos = i + 1);
-
-            const filas = finalizados.map(f => `
-                <tr class="${f.fuera ? 'fuera-lista' : 'finalizado'}">
-                    <td>${f.pos}</td>
-                    <td>${f.dorsal}${f.fuera ? ' 🚨' : ''}</td>
-                    <td>${f.nombre}</td>
-                    <td>${f.categoria}</td>
-                    <td>${formatearTiempoCompetidor(f.tiempo)}</td>
-                </tr>
-            `).join('');
-
-            document.getElementById('cuerpo-tabla').innerHTML = filas || `
-                <tr><td colspan="5" style="color:#a0aec0;">Esperando primeros tiempos...</td></tr>
-            `;
+            document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
         Promise.all([
@@ -452,7 +500,13 @@ def pantalla_vivo():
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
         ]).then(([inscritosData, tiemposData]) => {
             inscritos = {};
-            inscritosData.forEach(p => inscritos[p.dorsal] = p);
+            inscritosData.forEach(p => {
+                inscritos[p.dorsal] = {
+                    dorsal: p.dorsal,
+                    nombre: p.nombre,
+                    categoria: p.categoria || 'SIN CATEGORÍA'
+                };
+            });
             tiemposData.forEach(t => procesar(t));
             renderizar();
         }).catch(err => {
@@ -475,7 +529,7 @@ def pantalla_vivo():
 def health():
     try:
         init_db()
-        return jsonify({"status": "ok", "websocket_ready": True})
+        return jsonify({"status": "ok", "app": "CronoAndes", "websocket_ready": True})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 500
 
