@@ -57,11 +57,6 @@ def init_db():
     cur.close()
     conn.close()
 
-def is_db_ready():
-    """Verifica si la base de datos está lista para uso (útil en Render)"""
-    db_url = os.environ.get('DATABASE_URL', '').strip()
-    return bool(db_url) and not db_url.startswith('https://api.render.com')
-
 # === WebSockets ===
 @socketio.on('connect')
 def handle_connect():
@@ -82,8 +77,6 @@ def on_subscribe(data):
 @app.route('/api/crono', methods=['POST'])
 def crono():
     try:
-        if not is_db_ready():
-            return jsonify({"error": "base de datos no lista"}), 503
         init_db()
         data = request.get_json()
         if not data:
@@ -140,8 +133,6 @@ def crono():
 @app.route('/api/tiempos/<event_code>')
 def tiempos(event_code):
     try:
-        if not is_db_ready():
-            return jsonify([])
         init_db()
         conn = get_db_conn()
         cur = conn.cursor()
@@ -153,77 +144,59 @@ def tiempos(event_code):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === API: Inscripciones — SEPARADO EN DOS ENDPOINTS ===
-
-@app.route('/api/inscritos/<event_code>', methods=['POST'])
-def recibir_inscritos(event_code):
-    """Recibe lista de inscritos desde Streamlit"""
+# === API: Inscripciones ===
+@app.route('/api/inscritos/<event_code>', methods=['POST', 'GET'])
+def manejar_inscritos(event_code):
     try:
-        if not is_db_ready():
-            return jsonify({"error": "base de datos no lista"}), 503
         init_db()
-        data = request.get_json()
-        if not isinstance(data, list):
-            return jsonify({"error": "esperaba una lista"}), 400
+        if request.method == 'POST':
+            data = request.get_json()
+            if not isinstance(data, list):
+                return jsonify({"error": "esperaba una lista"}), 400
 
-        event_code = event_code.strip()
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code,))
-        count = 0
-        for item in data:
-            dorsal = str(item.get('dorsal', '')).strip()
-            nombre = str(item.get('nombre', '')).strip()
-            categoria = str(item.get('categoria', '')).strip()
-            club = str(item.get('club', '')).strip()
-            rfid = str(item.get('rfid', '')).strip()
-            if dorsal and nombre and categoria and club:
-                cur.execute('''
-                    INSERT INTO inscritos (event_code, dorsal, nombre, categoria, club, rfid)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                ''', (event_code, dorsal, nombre, categoria, club, rfid))
-                count += 1
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"status": "success", "count": count}), 201
-    except Exception as e:
-        logging.error(f"Error en POST /api/inscritos/{event_code}: {e}")
-        return jsonify({"error": str(e)}), 500
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
+            count = 0
+            for item in data:
+                dorsal = str(item.get('dorsal', '')).strip()
+                nombre = str(item.get('nombre', '')).strip()
+                categoria = str(item.get('categoria', '')).strip()
+                club = str(item.get('club', '')).strip()
+                rfid = str(item.get('rfid', '')).strip()
+                if dorsal and nombre and categoria and club:
+                    cur.execute('''
+                        INSERT INTO inscritos (event_code, dorsal, nombre, categoria, club, rfid)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    ''', (event_code, dorsal, nombre, categoria, club, rfid))
+                    count += 1
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"status": "success", "count": count}), 201
 
-@app.route('/api/inscritos/<event_code>', methods=['GET'])
-def obtener_inscritos(event_code):
-    """Devuelve lista de inscritos a la app móvil o pantalla en vivo"""
-    try:
-        if not is_db_ready():
-            return jsonify([])
-        init_db()
-        event_code = event_code.strip()
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute('''
-            SELECT dorsal, nombre, categoria, club, rfid 
-            FROM inscritos 
-            WHERE event_code = %s 
-            ORDER BY dorsal
-        ''', (event_code,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return jsonify([{
-            "dorsal": r[0], "nombre": r[1], "categoria": r[2], "club": r[3], "rfid": r[4]
-        } for r in rows])
+        else:  # GET
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute('''
+                SELECT dorsal, nombre, categoria, club, rfid 
+                FROM inscritos 
+                WHERE event_code = %s 
+                ORDER BY dorsal
+            ''', (event_code,))
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            return jsonify([{
+                "dorsal": r[0], "nombre": r[1], "categoria": r[2], "club": r[3], "rfid": r[4]
+            } for r in rows])
     except Exception as e:
-        logging.error(f"Error en GET /api/inscritos/{event_code}: {e}")
         return jsonify({"error": str(e)}), 500
 
 # === API: Borrar datos ===
 @app.route('/api/flush-event/<event_code>', methods=['DELETE'])
 def flush_event(event_code):
     try:
-        if not is_db_ready():
-            return jsonify({"error": "base de datos no lista"}), 503
-        init_db()
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM tiempos WHERE evento = %s", (event_code.strip(),))
@@ -238,9 +211,6 @@ def flush_event(event_code):
 @app.route('/api/flush-inscritos/<event_code>', methods=['DELETE'])
 def flush_inscritos(event_code):
     try:
-        if not is_db_ready():
-            return jsonify({"error": "base de datos no lista"}), 503
-        init_db()
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
@@ -545,8 +515,6 @@ def pantalla_vivo():
 @app.route('/health')
 def health():
     try:
-        if not is_db_ready():
-            return jsonify({"status": "db_not_ready"}), 503
         init_db()
         return jsonify({"status": "ok", "app": "CronoAndes", "websocket_ready": True})
     except Exception as e:
