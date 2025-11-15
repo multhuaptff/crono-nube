@@ -153,11 +153,11 @@ def tiempos(event_code):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# === API: Inscripciones — CORREGIDO PARA INSERTAR DATOS ===
+# === API: Inscripciones — SEPARADO EN DOS ENDPOINTS ===
 
 @app.route('/api/inscritos/<event_code>', methods=['POST'])
 def recibir_inscritos(event_code):
-    """Recibe lista de inscritos desde Streamlit y la guarda en la base de datos."""
+    """Recibe lista de inscritos desde Streamlit"""
     try:
         if not is_db_ready():
             return jsonify({"error": "base de datos no lista"}), 503
@@ -169,9 +169,7 @@ def recibir_inscritos(event_code):
         event_code = event_code.strip()
         conn = get_db_conn()
         cur = conn.cursor()
-        # 1. Eliminar inscritos anteriores del mismo evento
         cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code,))
-        # 2. Insertar los nuevos inscritos
         count = 0
         for item in data:
             dorsal = str(item.get('dorsal', '')).strip()
@@ -195,7 +193,7 @@ def recibir_inscritos(event_code):
 
 @app.route('/api/inscritos/<event_code>', methods=['GET'])
 def obtener_inscritos(event_code):
-    """Devuelve lista de inscritos a la app móvil o pantalla en vivo."""
+    """Devuelve lista de inscritos a la app móvil o pantalla en vivo"""
     try:
         if not is_db_ready():
             return jsonify([])
@@ -472,7 +470,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
