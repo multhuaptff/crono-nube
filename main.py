@@ -379,11 +379,14 @@ def pantalla_vivo():
             return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
+        // ✅ FUNCIÓN ACTUALIZADA: usa el ÚLTIMO registro de salida y llegada
         function calcularTiempo(dorsal) {
             const r = registros[dorsal] || { salidas: [], llegadas: [] };
             if (!r.salidas.length || !r.llegadas.length) return null;
-            const s = new Date((r.salidas[0].endsWith('Z') ? r.salidas[0] : r.salidas[0] + 'Z'));
-            const l = new Date((r.llegadas[0].endsWith('Z') ? r.llegadas[0] : r.llegadas[0] + 'Z'));
+            const lastSalida = r.salidas[r.salidas.length - 1];
+            const lastLlegada = r.llegadas[r.llegadas.length - 1];
+            const s = new Date(lastSalida.endsWith('Z') ? lastSalida : lastSalida + 'Z');
+            const l = new Date(lastLlegada.endsWith('Z') ? lastLlegada : lastLlegada + 'Z');
             if (isNaN(s) || isNaN(l) || l < s) return null;
             return l - s;
         }
