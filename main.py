@@ -379,15 +379,45 @@ def pantalla_vivo():
             return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
-        // ✅ FUNCIÓN ACTUALIZADA: usa el ÚLTIMO registro de salida y llegada
+        // ✅ FUNCIÓN ACTUALIZADA: lógica completa para salida y llegada
         function calcularTiempo(dorsal) {
             const r = registros[dorsal] || { salidas: [], llegadas: [] };
             if (!r.salidas.length || !r.llegadas.length) return null;
-            const lastSalida = r.salidas[r.salidas.length - 1];
-            const lastLlegada = r.llegadas[r.llegadas.length - 1];
-            const s = new Date(lastSalida.endsWith('Z') ? lastSalida : lastSalida + 'Z');
-            const l = new Date(lastLlegada.endsWith('Z') ? lastLlegada : lastLlegada + 'Z');
-            if (isNaN(s) || isNaN(l) || l < s) return null;
+
+            // --- SALIDA: siempre la ÚLTIMA ---
+            const ultimaSalidaStr = r.salidas[r.salidas.length - 1];
+            const s = new Date(ultimaSalidaStr.endsWith('Z') ? ultimaSalidaStr : ultimaSalidaStr + 'Z');
+            if (isNaN(s)) return null;
+
+            // --- LLEGADA: lógica inteligente ---
+            const llegadasFechas = r.llegadas.map(ts => {
+                const fecha = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
+                return isNaN(fecha) ? null : fecha;
+            }).filter(f => f !== null);
+
+            if (llegadasFechas.length === 0) return null;
+
+            llegadasFechas.sort((a, b) => a - b);
+            const primeraLlegada = llegadasFechas[0];
+            const ultimaLlegada = llegadasFechas[llegadasFechas.length - 1];
+            const diferenciaTotal = ultimaLlegada - primeraLlegada; // ms
+
+            let l;
+            if (diferenciaTotal <= 30 * 1000) {
+                // ≤30s → mediana
+                const n = llegadasFechas.length;
+                if (n === 1) l = llegadasFechas[0];
+                else if (n === 2) l = llegadasFechas[0];
+                else l = llegadasFechas[Math.floor(n / 2)];
+            } else if (diferenciaTotal > 10 * 60 * 1000) {
+                // >10 min → última (corrección oficial)
+                l = ultimaLlegada;
+            } else {
+                // Ruido intermedio → primera
+                l = primeraLlegada;
+            }
+
+            if (l < s) return null;
             return l - s;
         }
 
@@ -443,7 +473,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
