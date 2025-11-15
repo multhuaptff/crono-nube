@@ -428,6 +428,7 @@ def pantalla_vivo():
 
             if (t.action === 'salida') {
                 registros[t.dorsal].salidas.push(t.timestamp);
+                // Iniciar cronómetro SOLO con la primera salida
                 if (!inicioOficial) {
                     inicioOficial = eventoTime;
                     if (!intervalId) {
@@ -515,6 +516,7 @@ def pantalla_vivo():
             document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
+        // 🔥 Cargar datos iniciales y buscar la primera salida para iniciar el cronómetro
         Promise.all([
             fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
@@ -528,6 +530,28 @@ def pantalla_vivo():
                 };
             });
             tiemposData.forEach(t => procesar(t));
+
+            // Buscar la primera SALIDA entre los tiempos cargados
+            if (!inicioOficial) {
+                const salidas = tiemposData
+                    .filter(t => t.action === 'salida')
+                    .map(t => new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z')))
+                    .filter(d => !isNaN(d))
+                    .sort((a, b) => a - b);
+                if (salidas.length > 0) {
+                    inicioOficial = salidas[0];
+                    if (!intervalId) {
+                        intervalId = setInterval(() => {
+                            if (inicioOficial) {
+                                const ahora = new Date();
+                                const transcurrido = ahora - inicioOficial;
+                                document.querySelector('.contador-maestro').textContent = 
+                                    `⏱️ En vivo: ${formatearCronometroMaestro(transcurrido)}`;
+                            }
+                        }, 20);
+                    }
+                }
+            }
             renderizar();
         }).catch(err => {
             console.error("Error al cargar datos iniciales:", err);
