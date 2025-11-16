@@ -79,7 +79,7 @@ def crono():
     try:
         init_db()
         data = request.get_json()
-        if not data:  # ✅ CORREGIDO: condición completa
+        if not data:
             return jsonify({"error": "JSON inválido"}), 400
 
         dorsal = str(data.get('dorsal', '')).strip()
@@ -158,7 +158,7 @@ def manejar_inscritos(event_code):
             cur = conn.cursor()
             cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
             count = 0
-            for item in data:  # ✅ CORREGIDO: iterar sobre 'data'
+            for item in data:
                 dorsal = str(item.get('dorsal', '')).strip()
                 nombre = str(item.get('nombre', '')).strip()
                 categoria = str(item.get('categoria', '')).strip()
@@ -379,45 +379,15 @@ def pantalla_vivo():
             return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
-        // ✅ FUNCIÓN ACTUALIZADA: lógica completa para salida y llegada
+        // ✅ FUNCIÓN ACTUALIZADA: usa el ÚLTIMO registro de salida y llegada
         function calcularTiempo(dorsal) {
             const r = registros[dorsal] || { salidas: [], llegadas: [] };
             if (!r.salidas.length || !r.llegadas.length) return null;
-
-            // --- SALIDA: siempre la ÚLTIMA ---
-            const ultimaSalidaStr = r.salidas[r.salidas.length - 1];
-            const s = new Date(ultimaSalidaStr.endsWith('Z') ? ultimaSalidaStr : ultimaSalidaStr + 'Z');
-            if (isNaN(s)) return null;
-
-            // --- LLEGADA: lógica inteligente ---
-            const llegadasFechas = r.llegadas.map(ts => {
-                const fecha = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
-                return isNaN(fecha) ? null : fecha;
-            }).filter(f => f !== null);
-
-            if (llegadasFechas.length === 0) return null;
-
-            llegadasFechas.sort((a, b) => a - b);
-            const primeraLlegada = llegadasFechas[0];
-            const ultimaLlegada = llegadasFechas[llegadasFechas.length - 1];
-            const diferenciaTotal = ultimaLlegada - primeraLlegada; // ms
-
-            let l;
-            if (diferenciaTotal <= 30 * 1000) {
-                // ≤30s → mediana
-                const n = llegadasFechas.length;
-                if (n === 1) l = llegadasFechas[0];
-                else if (n === 2) l = llegadasFechas[0];
-                else l = llegadasFechas[Math.floor(n / 2)];
-            } else if (diferenciaTotal > 10 * 60 * 1000) {
-                // >10 min → última (corrección oficial)
-                l = ultimaLlegada;
-            } else {
-                // Ruido intermedio → primera
-                l = primeraLlegada;
-            }
-
-            if (l < s) return null;
+            const lastSalida = r.salidas[r.salidas.length - 1];
+            const lastLlegada = r.llegadas[r.llegadas.length - 1];
+            const s = new Date(lastSalida.endsWith('Z') ? lastSalida : lastSalida + 'Z');
+            const l = new Date(lastLlegada.endsWith('Z') ? lastLlegada : lastLlegada + 'Z');
+            if (isNaN(s) || isNaN(l) || l < s) return null;
             return l - s;
         }
 
@@ -428,7 +398,6 @@ def pantalla_vivo():
 
             if (t.action === 'salida') {
                 registros[t.dorsal].salidas.push(t.timestamp);
-                // Iniciar cronómetro SOLO con la primera salida
                 if (!inicioOficial) {
                     inicioOficial = eventoTime;
                     if (!intervalId) {
@@ -474,7 +443,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
@@ -516,7 +485,6 @@ def pantalla_vivo():
             document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
-        // 🔥 Cargar datos iniciales y buscar la primera salida para iniciar el cronómetro
         Promise.all([
             fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
@@ -530,28 +498,6 @@ def pantalla_vivo():
                 };
             });
             tiemposData.forEach(t => procesar(t));
-
-            // Buscar la primera SALIDA entre los tiempos cargados
-            if (!inicioOficial) {
-                const salidas = tiemposData
-                    .filter(t => t.action === 'salida')
-                    .map(t => new Date((t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z')))
-                    .filter(d => !isNaN(d))
-                    .sort((a, b) => a - b);
-                if (salidas.length > 0) {
-                    inicioOficial = salidas[0];
-                    if (!intervalId) {
-                        intervalId = setInterval(() => {
-                            if (inicioOficial) {
-                                const ahora = new Date();
-                                const transcurrido = ahora - inicioOficial;
-                                document.querySelector('.contador-maestro').textContent = 
-                                    `⏱️ En vivo: ${formatearCronometroMaestro(transcurrido)}`;
-                            }
-                        }, 20);
-                    }
-                }
-            }
             renderizar();
         }).catch(err => {
             console.error("Error al cargar datos iniciales:", err);
