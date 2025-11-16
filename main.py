@@ -79,7 +79,7 @@ def crono():
     try:
         init_db()
         data = request.get_json()
-        if not data:  # ✅ CORREGIDO: faltaba 'data'
+        if not data:  # ✅ CORREGIDO: condición completa
             return jsonify({"error": "JSON inválido"}), 400
 
         dorsal = str(data.get('dorsal', '')).strip()
@@ -158,7 +158,7 @@ def manejar_inscritos(event_code):
             cur = conn.cursor()
             cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
             count = 0
-            for item in data:  # ✅ CORREGIDO: faltaba 'data'
+            for item in data:  # ✅ CORREGIDO: iterar sobre 'data'
                 dorsal = str(item.get('dorsal', '')).strip()
                 nombre = str(item.get('nombre', '')).strip()
                 categoria = str(item.get('categoria', '')).strip()
