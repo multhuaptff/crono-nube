@@ -9,6 +9,7 @@ import os
 import psycopg2
 from datetime import datetime, timezone
 import logging
+from statistics import median
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +17,18 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cronoandes-secure-key-2025')
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+
+# === Función auxiliar: parsear timestamp ISO a datetime UTC ===
+def parse_iso_ts(ts_str):
+    """Convierte un string ISO 8601 a datetime UTC sin microsegundos."""
+    if ts_str.endswith('Z'):
+        ts_str = ts_str[:-1]
+    dt = datetime.fromisoformat(ts_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.replace(microsecond=0)
 
 # === Base de datos ===
 def get_db_conn():
@@ -86,25 +99,90 @@ def crono():
         action = str(data.get('action', 'llegada')).strip().lower()
         provided_ts = data.get('timestamp')
         if provided_ts:
-            ts = str(provided_ts).strip()
-            if not ts.endswith('Z') and '+' not in ts and 'Z' not in ts:
-                ts = ts.rstrip() + 'Z'
+            ts_str = str(provided_ts).strip()
+            if not ts_str.endswith('Z') and '+' not in ts_str and 'T' in ts_str:
+                ts_str = ts_str.rstrip() + 'Z'
         else:
-            ts = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+            ts_str = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         event_code = str(data.get('event_code', 'demo')).strip()
 
         if not dorsal or not event_code:
             return jsonify({"error": "dorsal y event_code requeridos"}), 400
 
+        current_time = parse_iso_ts(ts_str)
+
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-            (event_code, dorsal, action, ts)
-        )
-        conn.commit()
 
+        if action == 'llegada':
+            # Buscar llegadas existentes para este dorsal y evento
+            cur.execute('''
+                SELECT id, timestamp_iso
+                FROM tiempos
+                WHERE evento = %s AND dorsal = %s AND action = 'llegada'
+                ORDER BY timestamp_iso, id
+            ''', (event_code, dorsal))
+            existing_rows = cur.fetchall()
+
+            if not existing_rows:
+                # Primera llegada: insertar directamente
+                cur.execute(
+                    "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
+                    (event_code, dorsal, action, ts_str)
+                )
+                conn.commit()
+            else:
+                # Obtener la primera llegada registrada
+                first_ts_str = existing_rows[0][1]
+                first_time = parse_iso_ts(first_ts_str)
+                time_diff = (current_time - first_time).total_seconds()
+
+                # Caso: edición después de 10 minutos (600 segundos)
+                if time_diff > 600:
+                    # Reemplazar: borrar todas y guardar la nueva
+                    cur.execute("DELETE FROM tiempos WHERE evento = %s AND dorsal = %s AND action = 'llegada'", (event_code, dorsal))
+                    cur.execute(
+                        "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
+                        (event_code, dorsal, action, ts_str)
+                    )
+                    conn.commit()
+                # Caso: dentro de los 30 segundos → consolidar con mediana
+                elif time_diff <= 30:
+                    # Recopilar todos los tiempos (incluyendo el nuevo)
+                    all_datetimes = [first_time]
+                    for _, ts_iso in existing_rows[1:]:
+                        all_datetimes.append(parse_iso_ts(ts_iso))
+                    all_datetimes.append(current_time)
+
+                    # Convertir a segundos desde epoch para calcular mediana
+                    epoch_seconds = [int(dt.timestamp()) for dt in all_datetimes]
+                    median_sec = int(median(epoch_seconds))
+                    median_dt = datetime.fromtimestamp(median_sec, tz=timezone.utc).replace(microsecond=0)
+                    median_iso = median_dt.isoformat().replace('+00:00', 'Z')
+
+                    # Reemplazar todos por el tiempo mediano
+                    cur.execute("DELETE FROM tiempos WHERE evento = %s AND dorsal = %s AND action = 'llegada'", (event_code, dorsal))
+                    cur.execute(
+                        "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
+                        (event_code, dorsal, action, median_iso)
+                    )
+                    conn.commit()
+                else:
+                    # Entre 30s y 10min: ignorar (comportamiento seguro)
+                    conn.rollback()
+                    cur.close()
+                    conn.close()
+                    return jsonify({"status": "ignored", "reason": "llegada fuera de ventana de consolidación (30s) y antes de edición válida (10min)"}), 202
+        else:
+            # Acciones distintas de 'llegada' (ej: 'salida') → insertar siempre
+            cur.execute(
+                "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
+                (event_code, dorsal, action, ts_str)
+            )
+            conn.commit()
+
+        # Obtener datos del inscrito
         cur.execute('''
             SELECT nombre, categoria FROM inscritos 
             WHERE event_code = %s AND dorsal = %s
@@ -116,16 +194,18 @@ def crono():
         cur.close()
         conn.close()
 
+        # Emitir actualización (el frontend recargará desde /api/tiempos si necesita el tiempo consolidado)
         socketio.emit('nuevo_tiempo', {
             'event_code': event_code,
             'dorsal': dorsal,
             'action': action,
-            'timestamp': ts,
+            'timestamp': ts_str,
             'nombre': nombre,
             'categoria': categoria
         }, room=event_code)
 
         return jsonify({"status": "success"}), 201
+
     except Exception as e:
         logging.error(f"Error en /api/crono: {e}")
         return jsonify({"error": str(e)}), 500
@@ -379,7 +459,6 @@ def pantalla_vivo():
             return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
         }
 
-        // ✅ FUNCIÓN ACTUALIZADA: usa el ÚLTIMO registro de salida y llegada
         function calcularTiempo(dorsal) {
             const r = registros[dorsal] || { salidas: [], llegadas: [] };
             if (!r.salidas.length || !r.llegadas.length) return null;
@@ -526,4 +605,4 @@ def health():
 # === Iniciar ===
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port) que le falta actualizar a este ?
+    socketio.run(app, host='0.0.0.0', port=port)
