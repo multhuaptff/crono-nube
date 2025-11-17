@@ -194,7 +194,7 @@ def crono():
         cur.close()
         conn.close()
 
-        # Emitir actualización (el frontend recargará desde /api/tiempos si necesita el tiempo consolidado)
+        # Emitir actualización
         socketio.emit('nuevo_tiempo', {
             'event_code': event_code,
             'dorsal': dorsal,
@@ -406,7 +406,7 @@ def pantalla_vivo():
     <div class="header">
         <img id="logo" class="logo" style="display:none;">
         <h1>🏆 CronoAndes — Resultados en Vivo</h1>
-        <div class="contador-maestro">⏰ Esperando primera salida...</div>
+        <div class="contador-maestro">⏰ Cargando resultados en vivo...</div>
     </div>
     <div id="contenedor-categorias"></div>
 
