@@ -42,6 +42,16 @@ def get_db_conn():
 def init_db():
     conn = get_db_conn()
     cur = conn.cursor()
+    # Añadir columna 'reemplazado_por' si no existe
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                           WHERE table_name='tiempos' AND column_name='reemplazado_por') THEN
+                ALTER TABLE tiempos ADD COLUMN reemplazado_por INTEGER REFERENCES tiempos(id);
+            END IF;
+        END $$;
+    """)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS tiempos (
             id SERIAL PRIMARY KEY,
@@ -49,7 +59,8 @@ def init_db():
             dorsal TEXT NOT NULL,
             action TEXT NOT NULL,
             timestamp_iso TEXT NOT NULL,
-            creado_en TIMESTAMP DEFAULT NOW()
+            creado_en TIMESTAMP DEFAULT NOW(),
+            reemplazado_por INTEGER REFERENCES tiempos(id)
         )
     ''')
     cur.execute('''
@@ -66,6 +77,7 @@ def init_db():
     ''')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_inscritos_event ON inscritos (event_code)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_evento ON tiempos (evento)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_activos ON tiempos (evento) WHERE reemplazado_por IS NULL')
     conn.commit()
     cur.close()
     conn.close()
@@ -115,65 +127,22 @@ def crono():
         conn = get_db_conn()
         cur = conn.cursor()
 
+        # Marcar registros previos como reemplazados
+        cur.execute("""
+            UPDATE tiempos 
+            SET reemplazado_por = (
+                SELECT nextval('tiempos_id_seq')
+            )
+            WHERE evento = %s AND dorsal = %s AND action = %s AND reemplazado_por IS NULL
+        """, (event_code, dorsal, action))
+
         if action == 'llegada':
-            # Buscar llegadas existentes para este dorsal y evento
-            cur.execute('''
-                SELECT id, timestamp_iso
-                FROM tiempos
-                WHERE evento = %s AND dorsal = %s AND action = 'llegada'
-                ORDER BY timestamp_iso, id
-            ''', (event_code, dorsal))
-            existing_rows = cur.fetchall()
-
-            if not existing_rows:
-                # Primera llegada: insertar directamente
-                cur.execute(
-                    "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-                    (event_code, dorsal, action, ts_str)
-                )
-                conn.commit()
-            else:
-                # Obtener la primera llegada registrada
-                first_ts_str = existing_rows[0][1]
-                first_time = parse_iso_ts(first_ts_str)
-                time_diff = (current_time - first_time).total_seconds()
-
-                # Caso: edición después de 10 minutos (600 segundos)
-                if time_diff > 600:
-                    # Reemplazar: borrar todas y guardar la nueva
-                    cur.execute("DELETE FROM tiempos WHERE evento = %s AND dorsal = %s AND action = 'llegada'", (event_code, dorsal))
-                    cur.execute(
-                        "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-                        (event_code, dorsal, action, ts_str)
-                    )
-                    conn.commit()
-                # Caso: dentro de los 30 segundos → consolidar con mediana
-                elif time_diff <= 30:
-                    # Recopilar todos los tiempos (incluyendo el nuevo)
-                    all_datetimes = [first_time]
-                    for _, ts_iso in existing_rows[1:]:
-                        all_datetimes.append(parse_iso_ts(ts_iso))
-                    all_datetimes.append(current_time)
-
-                    # Convertir a segundos desde epoch para calcular mediana
-                    epoch_seconds = [int(dt.timestamp()) for dt in all_datetimes]
-                    median_sec = int(median(epoch_seconds))
-                    median_dt = datetime.fromtimestamp(median_sec, tz=timezone.utc).replace(microsecond=0)
-                    median_iso = median_dt.isoformat().replace('+00:00', 'Z')
-
-                    # Reemplazar todos por el tiempo mediano
-                    cur.execute("DELETE FROM tiempos WHERE evento = %s AND dorsal = %s AND action = 'llegada'", (event_code, dorsal))
-                    cur.execute(
-                        "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-                        (event_code, dorsal, action, median_iso)
-                    )
-                    conn.commit()
-                else:
-                    # Entre 30s y 10min: ignorar (comportamiento seguro)
-                    conn.rollback()
-                    cur.close()
-                    conn.close()
-                    return jsonify({"status": "ignored", "reason": "llegada fuera de ventana de consolidación (30s) y antes de edición válida (10min)"}), 202
+            # Insertar nuevo registro
+            cur.execute(
+                "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
+                (event_code, dorsal, action, ts_str)
+            )
+            conn.commit()
         else:
             # Acciones distintas de 'llegada' (ej: 'salida') → insertar siempre
             cur.execute(
@@ -216,7 +185,8 @@ def tiempos(event_code):
         init_db()
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s ORDER BY id", (event_code,))
+        # Solo devolver registros activos (no reemplazados)
+        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s AND reemplazado_por IS NULL ORDER BY id", (event_code,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -522,7 +492,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
