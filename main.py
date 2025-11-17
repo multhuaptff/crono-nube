@@ -104,7 +104,7 @@ def crono():
     try:
         init_db()
         data = request.get_json()
-        if not 
+        if not data:
             return jsonify({"error": "JSON inválido"}), 400
 
         dorsal = str(data.get('dorsal', '')).strip()
@@ -130,7 +130,9 @@ def crono():
         # Marcar registros previos como reemplazados
         cur.execute("""
             UPDATE tiempos 
-            SET reemplazado_por = (SELECT nextval('tiempos_id_seq'))
+            SET reemplazado_por = (
+                SELECT nextval('tiempos_id_seq')
+            )
             WHERE evento = %s AND dorsal = %s AND action = %s AND reemplazado_por IS NULL
         """, (event_code, dorsal, action))
 
@@ -142,7 +144,7 @@ def crono():
             )
             conn.commit()
         else:
-            # Acciones distintas de 'llegada' → insertar siempre
+            # Acciones distintas de 'llegada' (ej: 'salida') → insertar siempre
             cur.execute(
                 "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
                 (event_code, dorsal, action, ts_str)
@@ -183,7 +185,7 @@ def tiempos(event_code):
         init_db()
         conn = get_db_conn()
         cur = conn.cursor()
-        # Solo devolver registros activos
+        # Solo devolver registros activos (no reemplazados)
         cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s AND reemplazado_por IS NULL ORDER BY id", (event_code,))
         rows = cur.fetchall()
         cur.close()
@@ -206,7 +208,7 @@ def manejar_inscritos(event_code):
             cur = conn.cursor()
             cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
             count = 0
-            for item in 
+            for item in data:
                 dorsal = str(item.get('dorsal', '')).strip()
                 nombre = str(item.get('nombre', '')).strip()
                 categoria = str(item.get('categoria', '')).strip()
@@ -368,14 +370,6 @@ def pantalla_vivo():
         .nombre { width: 35%; }
         .categoria-col { width: 22%; }
         .tiempo { width: 20%; }
-        .contacto {
-            text-align: center;
-            font-size: 0.9rem;
-            color: #94a3b8;
-            padding: 1rem;
-            border-top: 1px solid #334155;
-            margin-top: 2rem;
-        }
     </style>
 </head>
 <body>
@@ -385,9 +379,6 @@ def pantalla_vivo():
         <div class="contador-maestro">⏰ Cargando resultados en vivo...</div>
     </div>
     <div id="contenedor-categorias"></div>
-    <div class="contacto">
-        📧 sportandesperu@gmail.com
-    </div>
 
     <script>
     document.addEventListener('DOMContentLoaded', function() {
