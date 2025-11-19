@@ -518,7 +518,7 @@ def pantalla_vivo():
 
             Object.keys(porCategoria).forEach(cat => {
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
-                porCategoria[cat].forEach((c, i) => c.pos = i + 1;
+                porCategoria[cat].forEach((c, i) => c.pos = i + 1);
             });
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
