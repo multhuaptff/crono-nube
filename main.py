@@ -10,6 +10,7 @@ import psycopg2
 from datetime import datetime, timezone
 import logging
 from statistics import median
+import re
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,27 @@ def parse_iso_ts(ts_str):
     else:
         dt = dt.astimezone(timezone.utc)
     return dt.replace(microsecond=0)
+
+# === Función auxiliar: truncar microsegundos a milisegundos en timestamps ISO ===
+def truncate_microseconds(ts_str):
+    """
+    Convierte un timestamp ISO con microsegundos (hasta 6 dígitos)
+    a uno con solo milisegundos (3 dígitos), terminado en 'Z'.
+    Ej: "2025-11-19T00:56:02.157868Z" → "2025-11-19T00:56:02.157Z"
+    """
+    if not ts_str:
+        return ts_str
+    # Normalizar a formato con 'Z'
+    clean_ts = ts_str.rstrip('Z').rstrip('+00:00')
+    if '.' in clean_ts:
+        base, frac = clean_ts.split('.', 1)
+        # Tomar hasta 6 dígitos y truncar a 3
+        frac = re.sub(r'[^0-9]', '', frac)
+        frac = frac[:6].ljust(6, '0')  # asegurar 6 dígitos
+        ms = frac[:3]  # milisegundos
+        return f"{base}.{ms}Z"
+    else:
+        return clean_ts + "Z"
 
 # === Base de datos ===
 def get_db_conn():
@@ -190,7 +212,11 @@ def tiempos(event_code):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return jsonify([{"dorsal": r[0], "action": r[1], "timestamp": r[2]} for r in rows])
+        return jsonify([{
+            "dorsal": r[0],
+            "action": r[1],
+            "timestamp": truncate_microseconds(r[2])
+        } for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
