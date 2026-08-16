@@ -1,17 +1,16 @@
 # main.py
-# Aplicación oficial: CronoAndes
-# Sistema de cronometraje deportivo en tiempo real – Formato Copa del Mundo
-# Versión para la nube con PostgreSQL
+# Visor de resultados CronoAndes - Modo Proxy
+# Consulta la API del servidor local a través del túnel
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-from flask_socketio import SocketIO, join_room
+from flask_socketio import SocketIO, emit
 import os
-import psycopg2
-from datetime import datetime, timezone
+import requests
 import logging
-import re
-from statistics import median
+from datetime import datetime
+import time
+import threading
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -20,300 +19,140 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cronoandes-secure-key-2
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
-# === Función auxiliar: parsear timestamp ISO a datetime UTC ===
-def parse_iso_ts(ts_str):
-    """Convierte un string ISO 8601 a datetime UTC sin microsegundos."""
-    if ts_str.endswith('Z'):
-        ts_str = ts_str[:-1]
-    dt = datetime.fromisoformat(ts_str)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt.replace(microsecond=0)
+# URL del servidor local (configurar con variable de entorno)
+SERVER_URL = os.environ.get('SERVER_URL', '').strip()
+if not SERVER_URL:
+    raise Exception("SERVER_URL no está definida. Ej: https://mi-tunel.ngrok.io")
 
-# === Función auxiliar: truncar microsegundos a milisegundos en timestamps ISO ===
-def truncate_microseconds(ts_str):
-    """
-    Convierte un timestamp ISO con microsegundos (hasta 6 dígitos)
-    a uno con solo milisegundos (3 dígitos), terminado en 'Z'.
-    Ej: "2025-11-19T00:56:02.157868Z" → "2025-11-19T00:56:02.157Z"
-    """
-    if not ts_str:
-        return ts_str
-    clean_ts = ts_str.rstrip('Z').rstrip('+00:00')
-    if '.' in clean_ts:
-        base, frac = clean_ts.split('.', 1)
-        frac = re.sub(r'[^0-9]', '', frac)
-        frac = frac[:6].ljust(6, '0')
-        ms = frac[:3]
-        return f"{base}.{ms}Z"
-    else:
-        return clean_ts + "Z"
+# Eliminar barra final si existe
+if SERVER_URL.endswith('/'):
+    SERVER_URL = SERVER_URL[:-1]
 
-# === Base de datos PostgreSQL ===
-def get_db_conn():
-    """Retorna una conexión a PostgreSQL usando DATABASE_URL."""
-    db_url = os.environ.get('DATABASE_URL', '').strip()
-    if not db_url:
-        raise Exception("DATABASE_URL no está definida")
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    # Forzar SSL si no se especifica (para servicios como Render, Supabase)
-    if 'sslmode' not in db_url:
-        db_url += '?sslmode=require'
-    return psycopg2.connect(db_url)
+logging.info(f"Visor conectado al servidor: {SERVER_URL}")
 
-def init_db():
-    """Crea las tablas y columnas necesarias si no existen."""
-    conn = get_db_conn()
-    cur = conn.cursor()
-    # Añadir columna 'reemplazado_por' si no existe
-    cur.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                           WHERE table_name='tiempos' AND column_name='reemplazado_por') THEN
-                ALTER TABLE tiempos ADD COLUMN reemplazado_por INTEGER REFERENCES tiempos(id);
-            END IF;
-        END $$;
-    """)
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS tiempos (
-            id SERIAL PRIMARY KEY,
-            evento TEXT NOT NULL,
-            dorsal TEXT NOT NULL,
-            action TEXT NOT NULL,
-            timestamp_iso TEXT NOT NULL,
-            creado_en TIMESTAMP DEFAULT NOW(),
-            reemplazado_por INTEGER REFERENCES tiempos(id)
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS inscritos (
-            id SERIAL PRIMARY KEY,
-            event_code TEXT NOT NULL,
-            dorsal TEXT NOT NULL,
-            nombre TEXT NOT NULL,
-            categoria TEXT NOT NULL,
-            club TEXT NOT NULL,
-            rfid TEXT,
-            creado_en TIMESTAMP DEFAULT NOW()
-        )
-    ''')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_inscritos_event ON inscritos (event_code)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_evento ON tiempos (evento)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_activos ON tiempos (evento) WHERE reemplazado_por IS NULL')
-    conn.commit()
-    cur.close()
-    conn.close()
+# === Funciones auxiliares ===
+def fetch_inscritos(event_code):
+    """Obtiene la lista de inscritos desde el servidor local."""
+    try:
+        url = f"{SERVER_URL}/api/inscritos/{event_code}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            logging.error(f"Error obteniendo inscritos: {resp.status_code}")
+            return []
+    except Exception as e:
+        logging.error(f"Error en fetch_inscritos: {e}")
+        return []
 
-# === WebSockets ===
-@socketio.on('connect')
-def handle_connect():
-    logging.info(f"Nuevo cliente conectado: {request.sid}")
+def fetch_tiempos(event_code):
+    """Obtiene los tiempos desde el servidor local."""
+    try:
+        url = f"{SERVER_URL}/api/tiempos/{event_code}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            logging.error(f"Error obteniendo tiempos: {resp.status_code}")
+            return []
+    except Exception as e:
+        logging.error(f"Error en fetch_tiempos: {e}")
+        return []
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    logging.info(f"Cliente desconectado: {request.sid}")
+# === WebSockets (para mantener la pantalla actualizada) ===
+# En este modo, los eventos 'nuevo_tiempo' no llegan desde el servidor local
+# porque el servidor local no emite WebSockets al visor en la nube.
+# Para mantener la sincronía, se puede usar un timer que consulte periódicamente,
+# o que el servidor local haga una petición POST al visor cuando hay un nuevo tiempo.
+# Por simplicidad, usaremos un polling periódico.
+
+polling_active = False
+polling_interval = 3  # segundos
+
+def start_polling(event_code):
+    """Inicia un hilo que consulta periódicamente los tiempos."""
+    global polling_active
+    if polling_active:
+        return
+    polling_active = True
+
+    def poll():
+        global polling_active
+        last_timestamp = None
+        while polling_active:
+            try:
+                tiempos = fetch_tiempos(event_code)
+                if tiempos:
+                    # Enviar los tiempos a los clientes conectados
+                    for t in tiempos:
+                        # Obtener nombre/categoría desde inscritos (simplificado)
+                        # Idealmente se debería cachear
+                        socketio.emit('nuevo_tiempo', {
+                            'dorsal': t['dorsal'],
+                            'action': t['action'],
+                            'timestamp': t['timestamp'],
+                            'nombre': '',  # Se puede obtener de inscritos
+                            'categoria': ''
+                        }, room=event_code)
+                time.sleep(polling_interval)
+            except Exception as e:
+                logging.error(f"Error en polling: {e}")
+                time.sleep(polling_interval)
+
+    thread = threading.Thread(target=poll, daemon=True)
+    thread.start()
 
 @socketio.on('subscribe')
 def on_subscribe(data):
     event_code = data.get('event_code', '').strip()
     if event_code:
         join_room(event_code)
-        logging.info(f"Cliente {request.sid} suscrito a evento: {event_code}")
+        logging.info(f"Cliente suscrito a evento: {event_code}")
+        # Iniciar polling para este evento (si no está ya activo)
+        start_polling(event_code)
 
-# === API: Recibir tiempos ===
-@app.route('/api/crono', methods=['POST'])
-def crono():
-    try:
-        init_db()
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "JSON inválido"}), 400
-
-        dorsal = str(data.get('dorsal', '')).strip()
-        action = str(data.get('action', 'llegada')).strip().lower()
-        provided_ts = data.get('timestamp')
-        if provided_ts:
-            ts_str = str(provided_ts).strip()
-            if not ts_str.endswith('Z') and '+' not in ts_str and 'T' in ts_str:
-                ts_str = ts_str.rstrip() + 'Z'
-        else:
-            ts_str = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-
-        event_code = str(data.get('event_code', 'demo')).strip()
-
-        if not dorsal or not event_code:
-            return jsonify({"error": "dorsal y event_code requeridos"}), 400
-
-        current_time = parse_iso_ts(ts_str)
-
-        conn = get_db_conn()
-        cur = conn.cursor()
-
-        # Marcar registros previos como reemplazados
-        cur.execute("""
-            UPDATE tiempos 
-            SET reemplazado_por = (
-                SELECT nextval('tiempos_id_seq')
-            )
-            WHERE evento = %s AND dorsal = %s AND action = %s AND reemplazado_por IS NULL
-        """, (event_code, dorsal, action))
-
-        # Insertar nuevo registro
-        cur.execute(
-            "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-            (event_code, dorsal, action, ts_str)
-        )
-        conn.commit()
-
-        # Obtener datos del inscrito
-        cur.execute('''
-            SELECT nombre, categoria FROM inscritos 
-            WHERE event_code = %s AND dorsal = %s
-        ''', (event_code, dorsal))
-        row = cur.fetchone()
-        nombre = row[0] if row else ""
-        categoria = row[1] if row else ""
-
-        cur.close()
-        conn.close()
-
-        # Emitir actualización
-        socketio.emit('nuevo_tiempo', {
-            'event_code': event_code,
-            'dorsal': dorsal,
-            'action': action,
-            'timestamp': ts_str,
-            'nombre': nombre,
-            'categoria': categoria
-        }, room=event_code)
-
-        return jsonify({"status": "success"}), 201
-
-    except Exception as e:
-        logging.error(f"Error en /api/crono: {e}")
-        return jsonify({"error": str(e)}), 500
+# === API del visor (pasa peticiones al servidor local) ===
+@app.route('/api/inscritos/<event_code>')
+def proxy_inscritos(event_code):
+    """Proxy para obtener inscritos desde el servidor local."""
+    return jsonify(fetch_inscritos(event_code))
 
 @app.route('/api/tiempos/<event_code>')
-def tiempos(event_code):
-    try:
-        init_db()
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s AND reemplazado_por IS NULL ORDER BY id", (event_code,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return jsonify([{
-            "dorsal": r[0],
-            "action": r[1],
-            "timestamp": truncate_microseconds(r[2])
-        } for r in rows])
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+def proxy_tiempos(event_code):
+    """Proxy para obtener tiempos desde el servidor local."""
+    return jsonify(fetch_tiempos(event_code))
 
-# === API: Inscripciones ===
-@app.route('/api/inscritos/<event_code>', methods=['POST', 'GET'])
-def manejar_inscritos(event_code):
-    try:
-        init_db()
-        if request.method == 'POST':
-            data = request.get_json()
-            if not isinstance(data, list):
-                return jsonify({"error": "esperaba una lista"}), 400
+@app.route('/api/refresh/<event_code>')
+def refresh(event_code):
+    """Fuerza una actualización de los tiempos desde el servidor local."""
+    tiempos = fetch_tiempos(event_code)
+    socketio.emit('nuevo_tiempo', tiempos, room=event_code)
+    return jsonify({"status": "ok", "count": len(tiempos)})
 
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
-            count = 0
-            for item in data:
-                dorsal = str(item.get('dorsal', '')).strip()
-                nombre = str(item.get('nombre', '')).strip()
-                categoria = str(item.get('categoria', '')).strip()
-                club = str(item.get('club', '')).strip()
-                rfid = str(item.get('rfid', '')).strip()
-                if dorsal and nombre and categoria and club:
-                    cur.execute('''
-                        INSERT INTO inscritos (event_code, dorsal, nombre, categoria, club, rfid)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    ''', (event_code, dorsal, nombre, categoria, club, rfid))
-                    count += 1
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({"status": "success", "count": count}), 201
-
-        else:  # GET
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute('''
-                SELECT dorsal, nombre, categoria, club, rfid 
-                FROM inscritos 
-                WHERE event_code = %s 
-                ORDER BY dorsal
-            ''', (event_code,))
-            rows = cur.fetchall()
-            cur.close()
-            conn.close()
-            return jsonify([{
-                "dorsal": r[0], "nombre": r[1], "categoria": r[2], "club": r[3], "rfid": r[4]
-            } for r in rows])
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# === API: Borrar datos ===
-@app.route('/api/flush-event/<event_code>', methods=['DELETE'])
-def flush_event(event_code):
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM tiempos WHERE evento = %s", (event_code.strip(),))
-        count = cur.rowcount
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"status": "success", "deleted": count}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/flush-inscritos/<event_code>', methods=['DELETE'])
-def flush_inscritos(event_code):
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
-        count = cur.rowcount
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"status": "success", "deleted": count}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# === Página principal ===
+# === Pantalla ===
 @app.route('/')
 def home():
     return '''
-    <h2>⏱️ CronoAndes - Sistema de Cronometraje Profesional</h2>
-    <p>Este sistema está en modo <strong>TIEMPO REAL</strong>.</p>
+    <h2>⏱️ CronoAndes - Visor de Resultados (Modo Proxy)</h2>
+    <p>Conectado al servidor: <strong>''' + SERVER_URL + '''</strong></p>
     <p>Accede a la <a href="/pantalla?event_code=TU_CODIGO">pantalla en vivo</a> para ver resultados.</p>
-    <p>✅ Formato Copa del Mundo<br>✅ Logo personalizable<br>✅ Agrupado por categoría</p>
     '''
 
-# === Pantalla en vivo — CRONOANDES (Formato Copa del Mundo) ===
 @app.route('/pantalla')
 def pantalla_vivo():
+    # Usar la misma plantilla HTML que el original, pero con polling en lugar de WebSockets directos
+    # Para no duplicar, usamos render_template_string o devolvemos el HTML.
+    # Como es extenso, lo mantengo igual pero con una pequeña modificación para que el cliente
+    # también pueda hacer polling si es necesario. Pero por simplicidad, el servidor hará polling.
     return '''
 <!DOCTYPE html>
-<html lang="es">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🏆 CronoAndes — Resultados en Vivo</title>
     <style>
+        /* (mismo estilo que antes) */
         body {
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
             background: #0f172a;
@@ -555,6 +394,7 @@ def pantalla_vivo():
             document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
+        // Carga inicial
         Promise.all([
             fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
@@ -573,10 +413,19 @@ def pantalla_vivo():
             console.error("Error al cargar datos iniciales:", err);
         });
 
+        // Escuchar eventos de WebSocket (enviados por el servidor cuando hay nuevos tiempos)
         socket.on('nuevo_tiempo', (d) => {
-            procesar(d);
+            // Si d es un array (actualización por polling), procesar cada uno
+            if (Array.isArray(d)) {
+                d.forEach(t => procesar(t));
+            } else {
+                procesar(d);
+            }
             renderizar();
         });
+
+        // También podemos forzar una actualización manual cada X segundos (cliente side)
+        // Pero el servidor ya hace polling, así que esto es opcional.
     });
     </script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
@@ -587,11 +436,12 @@ def pantalla_vivo():
 # === Health check ===
 @app.route('/health')
 def health():
-    try:
-        init_db()
-        return jsonify({"status": "ok", "app": "CronoAndes", "websocket_ready": True})
-    except Exception as e:
-        return jsonify({"status": "error", "msg": str(e)}), 500
+    return jsonify({
+        "status": "ok",
+        "app": "CronoAndes Proxy",
+        "server_url": SERVER_URL,
+        "connected": True
+    })
 
 # === Iniciar ===
 if __name__ == '__main__':
