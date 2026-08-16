@@ -1,16 +1,17 @@
 # main.py
 # Aplicación oficial: CronoAndes
 # Sistema de cronometraje deportivo en tiempo real – Formato Copa del Mundo
+# Adaptado para SQLite y lectura automática de event_code desde evento_activo.json
 
+import json
+import os
+import sqlite3
+import re
+import logging
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room
-import os
-import psycopg2
-from datetime import datetime, timezone
-import logging
-from statistics import median
-import re
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -36,73 +37,97 @@ def truncate_microseconds(ts_str):
     """
     Convierte un timestamp ISO con microsegundos (hasta 6 dígitos)
     a uno con solo milisegundos (3 dígitos), terminado en 'Z'.
-    Ej: "2025-11-19T00:56:02.157868Z" → "2025-11-19T00:56:02.157Z"
     """
     if not ts_str:
         return ts_str
-    # Normalizar a formato con 'Z'
     clean_ts = ts_str.rstrip('Z').rstrip('+00:00')
     if '.' in clean_ts:
         base, frac = clean_ts.split('.', 1)
-        # Tomar hasta 6 dígitos y truncar a 3
         frac = re.sub(r'[^0-9]', '', frac)
-        frac = frac[:6].ljust(6, '0')  # asegurar 6 dígitos
-        ms = frac[:3]  # milisegundos
+        frac = frac[:6].ljust(6, '0')
+        ms = frac[:3]
         return f"{base}.{ms}Z"
     else:
         return clean_ts + "Z"
 
-# === Base de datos ===
+# === Base de datos SQLite ===
 def get_db_conn():
-    db_url = os.environ.get('DATABASE_URL', '').strip()
-    if not db_url:
-        raise Exception("DATABASE_URL no está definida")
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(db_url, sslmode='require')
+    """
+    Retorna una conexión a la base de datos SQLite.
+    Ruta desde variable de entorno SQLITE_DB_PATH o por defecto 'cronoandes.db'
+    """
+    db_path = os.environ.get('SQLITE_DB_PATH', 'cronoandes.db')
+    if not os.path.isabs(db_path):
+        db_path = os.path.join(os.path.dirname(__file__), db_path)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 def init_db():
+    """Crea las tablas y columnas necesarias si no existen."""
     conn = get_db_conn()
     cur = conn.cursor()
-    # Añadir columna 'reemplazado_por' si no existe
-    cur.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                           WHERE table_name='tiempos' AND column_name='reemplazado_por') THEN
-                ALTER TABLE tiempos ADD COLUMN reemplazado_por INTEGER REFERENCES tiempos(id);
-            END IF;
-        END $$;
-    """)
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS tiempos (
-            id SERIAL PRIMARY KEY,
-            evento TEXT NOT NULL,
-            dorsal TEXT NOT NULL,
-            action TEXT NOT NULL,
-            timestamp_iso TEXT NOT NULL,
-            creado_en TIMESTAMP DEFAULT NOW(),
-            reemplazado_por INTEGER REFERENCES tiempos(id)
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS inscritos (
-            id SERIAL PRIMARY KEY,
-            event_code TEXT NOT NULL,
-            dorsal TEXT NOT NULL,
-            nombre TEXT NOT NULL,
-            categoria TEXT NOT NULL,
-            club TEXT NOT NULL,
-            rfid TEXT,
-            creado_en TIMESTAMP DEFAULT NOW()
-        )
-    ''')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_inscritos_event ON inscritos (event_code)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_evento ON tiempos (evento)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_activos ON tiempos (evento) WHERE reemplazado_por IS NULL')
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute("PRAGMA table_info(tiempos)")
+        columns = [row[1] for row in cur.fetchall()]
+        if 'reemplazado_por' not in columns:
+            cur.execute("ALTER TABLE tiempos ADD COLUMN reemplazado_por INTEGER REFERENCES tiempos(id)")
+
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS tiempos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                evento TEXT NOT NULL,
+                dorsal TEXT NOT NULL,
+                action TEXT NOT NULL,
+                timestamp_iso TEXT NOT NULL,
+                creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reemplazado_por INTEGER REFERENCES tiempos(id)
+            )
+        ''')
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS inscritos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_code TEXT NOT NULL,
+                dorsal TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                categoria TEXT NOT NULL,
+                club TEXT NOT NULL,
+                rfid TEXT,
+                creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_inscritos_event ON inscritos (event_code)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_evento ON tiempos (evento)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_tiempos_activos ON tiempos (evento, reemplazado_por)')
+        conn.commit()
+        logging.info("Base de datos SQLite inicializada correctamente.")
+    except Exception as e:
+        logging.error(f"Error inicializando base de datos: {e}")
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+# === Función para leer event_code desde evento_activo.json ===
+def get_event_code_from_json():
+    """Intenta leer el event_code del archivo evento_activo.json en la carpeta datos."""
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), 'datos', 'evento_activo.json'),
+        os.path.join(os.getcwd(), 'datos', 'evento_activo.json'),
+        'evento_activo.json'
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('event_code', '')
+            except:
+                pass
+    return ''
 
 # === WebSockets ===
 @socketio.on('connect')
@@ -144,39 +169,28 @@ def crono():
         if not dorsal or not event_code:
             return jsonify({"error": "dorsal y event_code requeridos"}), 400
 
-        current_time = parse_iso_ts(ts_str)
-
         conn = get_db_conn()
         cur = conn.cursor()
 
-        # Marcar registros previos como reemplazados
+        cur.execute("SELECT MAX(id) FROM tiempos")
+        max_id = cur.fetchone()[0]
+        next_id = (max_id or 0) + 1
+
         cur.execute("""
             UPDATE tiempos 
-            SET reemplazado_por = (
-                SELECT nextval('tiempos_id_seq')
-            )
-            WHERE evento = %s AND dorsal = %s AND action = %s AND reemplazado_por IS NULL
-        """, (event_code, dorsal, action))
+            SET reemplazado_por = ?
+            WHERE evento = ? AND dorsal = ? AND action = ? AND reemplazado_por IS NULL
+        """, (next_id, event_code, dorsal, action))
 
-        if action == 'llegada':
-            # Insertar nuevo registro
-            cur.execute(
-                "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-                (event_code, dorsal, action, ts_str)
-            )
-            conn.commit()
-        else:
-            # Acciones distintas de 'llegada' (ej: 'salida') → insertar siempre
-            cur.execute(
-                "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (%s, %s, %s, %s)",
-                (event_code, dorsal, action, ts_str)
-            )
-            conn.commit()
+        cur.execute(
+            "INSERT INTO tiempos (evento, dorsal, action, timestamp_iso) VALUES (?, ?, ?, ?)",
+            (event_code, dorsal, action, ts_str)
+        )
+        conn.commit()
 
-        # Obtener datos del inscrito
         cur.execute('''
             SELECT nombre, categoria FROM inscritos 
-            WHERE event_code = %s AND dorsal = %s
+            WHERE event_code = ? AND dorsal = ?
         ''', (event_code, dorsal))
         row = cur.fetchone()
         nombre = row[0] if row else ""
@@ -185,7 +199,6 @@ def crono():
         cur.close()
         conn.close()
 
-        # Emitir actualización
         socketio.emit('nuevo_tiempo', {
             'event_code': event_code,
             'dorsal': dorsal,
@@ -207,8 +220,7 @@ def tiempos(event_code):
         init_db()
         conn = get_db_conn()
         cur = conn.cursor()
-        # Solo devolver registros activos (no reemplazados)
-        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = %s AND reemplazado_por IS NULL ORDER BY id", (event_code,))
+        cur.execute("SELECT dorsal, action, timestamp_iso FROM tiempos WHERE evento = ? AND reemplazado_por IS NULL ORDER BY id", (event_code,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -232,7 +244,7 @@ def manejar_inscritos(event_code):
 
             conn = get_db_conn()
             cur = conn.cursor()
-            cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
+            cur.execute("DELETE FROM inscritos WHERE event_code = ?", (event_code.strip(),))
             count = 0
             for item in data:
                 dorsal = str(item.get('dorsal', '')).strip()
@@ -243,7 +255,7 @@ def manejar_inscritos(event_code):
                 if dorsal and nombre and categoria and club:
                     cur.execute('''
                         INSERT INTO inscritos (event_code, dorsal, nombre, categoria, club, rfid)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ''', (event_code, dorsal, nombre, categoria, club, rfid))
                     count += 1
             conn.commit()
@@ -251,13 +263,13 @@ def manejar_inscritos(event_code):
             conn.close()
             return jsonify({"status": "success", "count": count}), 201
 
-        else:  # GET
+        else:
             conn = get_db_conn()
             cur = conn.cursor()
             cur.execute('''
                 SELECT dorsal, nombre, categoria, club, rfid 
                 FROM inscritos 
-                WHERE event_code = %s 
+                WHERE event_code = ? 
                 ORDER BY dorsal
             ''', (event_code,))
             rows = cur.fetchall()
@@ -275,7 +287,7 @@ def flush_event(event_code):
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("DELETE FROM tiempos WHERE evento = %s", (event_code.strip(),))
+        cur.execute("DELETE FROM tiempos WHERE evento = ?", (event_code.strip(),))
         count = cur.rowcount
         conn.commit()
         cur.close()
@@ -289,7 +301,7 @@ def flush_inscritos(event_code):
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("DELETE FROM inscritos WHERE event_code = %s", (event_code.strip(),))
+        cur.execute("DELETE FROM inscritos WHERE event_code = ?", (event_code.strip(),))
         count = cur.rowcount
         conn.commit()
         cur.close()
@@ -304,14 +316,37 @@ def home():
     return '''
     <h2>⏱️ CronoAndes - Sistema de Cronometraje Profesional</h2>
     <p>Este sistema está en modo <strong>TIEMPO REAL</strong>.</p>
-    <p>Accede a la <a href="/pantalla?event_code=TU_CODIGO">pantalla en vivo</a> para ver resultados.</p>
+    <p>Accede a la <a href="/pantalla">pantalla en vivo</a> para ver resultados.</p>
     <p>✅ Formato Copa del Mundo<br>✅ Logo personalizable<br>✅ Agrupado por categoría</p>
     '''
 
-# === Pantalla en vivo — CRONOANDES (Formato Copa del Mundo) ===
+# === Pantalla en vivo — CRONOANDES ===
 @app.route('/pantalla')
 def pantalla_vivo():
-    return '''
+    # Si no se proporciona event_code en la URL, intentar leer de evento_activo.json
+    event_code = request.args.get('event_code', '').strip()
+    if not event_code:
+        event_code = get_event_code_from_json()
+        if not event_code:
+            # Si no se encuentra, mostrar mensaje pidiendo ingresar el código
+            return '''
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"><title>CronoAndes</title></head>
+            <body style="background:#0f172a; color:white; font-family:sans-serif; text-align:center; padding:4rem;">
+                <h1>⏱️ CronoAndes</h1>
+                <p>No se encontró un evento activo.</p>
+                <p>Por favor, ingresa el código del evento en la URL:</p>
+                <p style="background:#1e293b; padding:1rem; border-radius:8px; display:inline-block;">
+                    <code>/pantalla?event_code=TU_CODIGO</code>
+                </p>
+                <p>O asegúrate de que el archivo <code>datos/evento_activo.json</code> exista.</p>
+            </body>
+            </html>
+            '''
+
+    # Construir la página HTML con el event_code
+    return f'''
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -319,46 +354,46 @@ def pantalla_vivo():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🏆 CronoAndes — Resultados en Vivo</title>
     <style>
-        body {
+        body {{
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
             background: #0f172a;
             color: white;
             margin: 0;
             padding: 0;
             overflow-x: hidden;
-        }
-        .header {
+        }}
+        .header {{
             text-align: center;
             padding: 1rem;
             background: #1e293b;
             border-bottom: 3px solid #38bdf8;
-        }
-        .logo {
+        }}
+        .logo {{
             max-height: 70px;
             margin-bottom: 12px;
             border-radius: 6px;
-        }
-        .header h1 {
+        }}
+        .header h1 {{
             font-size: 2.0rem;
             margin: 0.5rem 0;
             color: white;
             text-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
-        }
-        .contador-maestro {
+        }}
+        .contador-maestro {{
             font-size: 1.3rem;
             font-weight: bold;
             color: #60a5fa;
             margin-top: 0.5rem;
             font-family: 'Courier New', monospace;
-        }
-        .categoria-seccion {
+        }}
+        .categoria-seccion {{
             margin: 2rem 1rem;
             border: 1px solid #334155;
             border-radius: 10px;
             background: #1e293b;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-        .categoria-titulo {
+        }}
+        .categoria-titulo {{
             background: #0f172a;
             color: #f8fafc;
             padding: 14px;
@@ -366,36 +401,36 @@ def pantalla_vivo():
             font-weight: bold;
             text-align: center;
             border-bottom: 2px solid #38bdf8;
-        }
-        table {
+        }}
+        table {{
             width: 100%;
             border-collapse: collapse;
             table-layout: fixed;
             margin-top: 8px;
-        }
-        th, td {
+        }}
+        th, td {{
             padding: 12px 10px;
             text-align: center;
             font-size: 1.2rem;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-        }
-        th {
+        }}
+        th {{
             background: #0f172a;
             color: #94a3b8;
             font-weight: bold;
             font-size: 1.1rem;
-        }
-        .finalizado {
+        }}
+        .finalizado {{
             background-color: #1e293b !important;
             color: #60a5fa !important;
-        }
-        .pos { width: 8%; }
-        .dorsal { width: 15%; }
-        .nombre { width: 35%; }
-        .categoria-col { width: 22%; }
-        .tiempo { width: 20%; }
+        }}
+        .pos {{ width: 8%; }}
+        .dorsal {{ width: 15%; }}
+        .nombre {{ width: 35%; }}
+        .categoria-col {{ width: 22%; }}
+        .tiempo {{ width: 20%; }}
     </style>
 </head>
 <body>
@@ -407,56 +442,56 @@ def pantalla_vivo():
     <div id="contenedor-categorias"></div>
 
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', function() {{
         const urlParams = new URLSearchParams(window.location.search);
         let eventCode = urlParams.get('event_code');
         const logoUrl = urlParams.get('logo_url');
 
-        if (logoUrl) {
+        if (logoUrl) {{
             const img = document.getElementById('logo');
             img.src = logoUrl;
             img.style.display = 'block';
-        }
+        }}
 
-        if (!eventCode) {
+        if (!eventCode) {{
             eventCode = prompt("Ingresa el código del evento:");
-            if (!eventCode) {
+            if (!eventCode) {{
                 document.body.innerHTML = '<div style="color:white;text-align:center;padding:4rem;font-size:1.5rem;background:#0f172a;">❌ Código del evento requerido</div>';
                 return;
-            }
-            let newUrl = `${window.location.pathname}?event_code=${encodeURIComponent(eventCode)}`;
-            if (logoUrl) newUrl += `&logo_url=${encodeURIComponent(logoUrl)}`;
+            }}
+            let newUrl = `${{window.location.pathname}}?event_code=${{encodeURIComponent(eventCode)}}`;
+            if (logoUrl) newUrl += `&logo_url=${{encodeURIComponent(logoUrl)}}`;
             window.history.replaceState(null, null, newUrl);
-        }
+        }}
 
-        const socket = io(window.location.origin, { transports: ['websocket'] });
-        socket.emit('subscribe', { event_code: eventCode });
+        const socket = io(window.location.origin, {{ transports: ['websocket'] }});
+        socket.emit('subscribe', {{ event_code: eventCode }});
 
-        let registros = {};
-        let inscritos = {};
+        let registros = {{}};
+        let inscritos = {{}};
         let inicioOficial = null;
         let intervalId = null;
 
-        function formatearCronometroMaestro(ms) {
+        function formatearCronometroMaestro(ms) {{
             if (ms == null || ms < 0) return '00:00.000';
             const totalSegundos = ms / 1000;
             const mins = Math.floor(totalSegundos / 60);
             const segs = Math.floor(totalSegundos % 60);
             const milis = Math.floor(ms % 1000);
-            return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
-        }
+            return `${{mins.toString().padStart(2, '0')}}:${{segs.toString().padStart(2, '0')}}.${{milis.toString().padStart(3, '0')}}`;
+        }}
 
-        function formatearTiempoCompetidor(ms) {
+        function formatearTiempoCompetidor(ms) {{
             if (ms == null) return '';
             const totalSegundos = ms / 1000;
             const mins = Math.floor(totalSegundos / 60);
             const segs = Math.floor(totalSegundos % 60);
             const milis = Math.floor(ms % 1000);
-            return `${mins.toString().padStart(2, '0')}:${segs.toString().padStart(2, '0')}.${milis.toString().padStart(3, '0')}`;
-        }
+            return `${{mins.toString().padStart(2, '0')}}:${{segs.toString().padStart(2, '0')}}.${{milis.toString().padStart(3, '0')}}`;
+        }}
 
-        function calcularTiempo(dorsal) {
-            const r = registros[dorsal] || { salidas: [], llegadas: [] };
+        function calcularTiempo(dorsal) {{
+            const r = registros[dorsal] || {{ salidas: [], llegadas: [] }};
             if (!r.salidas.length || !r.llegadas.length) return null;
             const lastSalida = r.salidas[r.salidas.length - 1];
             const lastLlegada = r.llegadas[r.llegadas.length - 1];
@@ -464,82 +499,82 @@ def pantalla_vivo():
             const l = new Date(lastLlegada.endsWith('Z') ? lastLlegada : lastLlegada + 'Z');
             if (isNaN(s) || isNaN(l) || l < s) return null;
             return l - s;
-        }
+        }}
 
-        function procesar(t) {
-            if (!registros[t.dorsal]) registros[t.dorsal] = { salidas: [], llegadas: [] };
+        function procesar(t) {{
+            if (!registros[t.dorsal]) registros[t.dorsal] = {{ salidas: [], llegadas: [] }};
             const tsNorm = t.timestamp.endsWith('Z') ? t.timestamp : t.timestamp + 'Z';
             const eventoTime = new Date(tsNorm);
 
-            if (t.action === 'salida') {
+            if (t.action === 'salida') {{
                 registros[t.dorsal].salidas.push(t.timestamp);
-                if (!inicioOficial) {
+                if (!inicioOficial) {{
                     inicioOficial = eventoTime;
-                    if (!intervalId) {
-                        intervalId = setInterval(() => {
-                            if (inicioOficial) {
+                    if (!intervalId) {{
+                        intervalId = setInterval(() => {{
+                            if (inicioOficial) {{
                                 const ahora = new Date();
                                 const transcurrido = ahora - inicioOficial;
                                 document.querySelector('.contador-maestro').textContent = 
-                                    `⏱️ En vivo: ${formatearCronometroMaestro(transcurrido)}`;
-                            }
-                        }, 20);
-                    }
-                }
-            } else if (t.action === 'llegada') {
+                                    `⏱️ En vivo: ${{formatearCronometroMaestro(transcurrido)}}`;
+                            }}
+                        }}, 20);
+                    }}
+                }}
+            }} else if (t.action === 'llegada') {{
                 registros[t.dorsal].llegadas.push(t.timestamp);
-            }
+            }}
 
-            if (t.nombre && !inscritos[t.dorsal]) {
-                inscritos[t.dorsal] = {
+            if (t.nombre && !inscritos[t.dorsal]) {{
+                inscritos[t.dorsal] = {{
                     dorsal: t.dorsal,
                     nombre: t.nombre,
                     categoria: t.categoria || 'SIN CATEGORÍA'
-                };
-            }
-        }
+                }};
+            }}
+        }}
 
-        function renderizar() {
-            const competidores = Object.keys(inscritos).map(d => {
+        function renderizar() {{
+            const competidores = Object.keys(inscritos).map(d => {{
                 const tiempo = calcularTiempo(d);
-                return tiempo !== null ? {
+                return tiempo !== null ? {{
                     dorsal: d,
                     nombre: inscritos[d].nombre,
                     categoria: inscritos[d].categoria,
                     tiempo: tiempo
-                } : null;
-            }).filter(Boolean);
+                }} : null;
+            }}).filter(Boolean);
 
-            const porCategoria = {};
-            competidores.forEach(c => {
+            const porCategoria = {{}};
+            competidores.forEach(c => {{
                 if (!porCategoria[c.categoria]) porCategoria[c.categoria] = [];
                 porCategoria[c.categoria].push(c);
-            });
+            }});
 
-            Object.keys(porCategoria).forEach(cat => {
+            Object.keys(porCategoria).forEach(cat => {{
                 porCategoria[cat].sort((a, b) => a.tiempo - b.tiempo);
                 porCategoria[cat].forEach((c, i) => c.pos = i + 1);
-            });
+            }});
 
             const categoriasOrdenadas = Object.keys(porCategoria).sort();
 
             let html = '';
-            if (categoriasOrdenadas.length === 0) {
+            if (categoriasOrdenadas.length === 0) {{
                 html = '<div style="text-align:center;padding:2.5rem;color:#94a3b8;font-size:1.2rem;">Esperando primeros tiempos...</div>';
-            } else {
-                categoriasOrdenadas.forEach(cat => {
+            }} else {{
+                categoriasOrdenadas.forEach(cat => {{
                     const filas = porCategoria[cat].map(f => `
                         <tr class="finalizado">
-                            <td class="pos">${f.pos}</td>
-                            <td class="dorsal">${f.dorsal}</td>
-                            <td class="nombre">${f.nombre}</td>
-                            <td class="categoria-col">${f.categoria}</td>
-                            <td class="tiempo">${formatearTiempoCompetidor(f.tiempo)}</td>
+                            <td class="pos">${{f.pos}}</td>
+                            <td class="dorsal">${{f.dorsal}}</td>
+                            <td class="nombre">${{f.nombre}}</td>
+                            <td class="categoria-col">${{f.categoria}}</td>
+                            <td class="tiempo">${{formatearTiempoCompetidor(f.tiempo)}}</td>
                         </tr>
                     `).join('');
                     html += `
                         <div class="categoria-seccion">
-                            <div class="categoria-titulo">${cat}</div>
+                            <div class="categoria-titulo">${{cat}}</div>
                             <table>
                                 <thead>
                                     <tr>
@@ -550,39 +585,39 @@ def pantalla_vivo():
                                         <th class="tiempo">Tiempo</th>
                                     </tr>
                                 </thead>
-                                <tbody>${filas}</tbody>
+                                <tbody>${{filas}}</tbody>
                             </table>
                         </div>
                     `;
-                });
-            }
+                }});
+            }}
 
             document.getElementById('contenedor-categorias').innerHTML = html;
-        }
+        }}
 
         Promise.all([
-            fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
-            fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
-        ]).then(([inscritosData, tiemposData]) => {
-            inscritos = {};
-            inscritosData.forEach(p => {
-                inscritos[p.dorsal] = {
+            fetch(`/api/inscritos/${{encodeURIComponent(eventCode)}}`).then(r => r.ok ? r.json() : []),
+            fetch(`/api/tiempos/${{encodeURIComponent(eventCode)}}`).then(r => r.ok ? r.json() : [])
+        ]).then(([inscritosData, tiemposData]) => {{
+            inscritos = {{}};
+            inscritosData.forEach(p => {{
+                inscritos[p.dorsal] = {{
                     dorsal: p.dorsal,
                     nombre: p.nombre,
                     categoria: p.categoria || 'SIN CATEGORÍA'
-                };
-            });
+                }};
+            }});
             tiemposData.forEach(t => procesar(t));
             renderizar();
-        }).catch(err => {
+        }}).catch(err => {{
             console.error("Error al cargar datos iniciales:", err);
-        });
+        }});
 
-        socket.on('nuevo_tiempo', (d) => {
+        socket.on('nuevo_tiempo', (d) => {{
             procesar(d);
             renderizar();
-        });
-    });
+        }});
+    }});
     </script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </body>
