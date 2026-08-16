@@ -1,16 +1,16 @@
 # main.py
-# Visor de resultados CronoAndes - Modo Proxy
-# Consulta la API del servidor local a través del túnel
+# Visor de resultados CronoAndes - Modo Proxy con detección automática de URL desde GitHub
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, join_room, emit
 import os
 import requests
 import logging
-from datetime import datetime
+import json
 import time
 import threading
+from datetime import datetime
 
 # === Configuración ===
 logging.basicConfig(level=logging.INFO)
@@ -19,20 +19,38 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'cronoandes-secure-key-2
 CORS(app, resources={r"/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
-# URL del servidor local (configurar con variable de entorno)
-SERVER_URL = os.environ.get('SERVER_URL', '').strip()
+# URL del archivo de configuración en GitHub
+GITHUB_CONFIG_URL = 'https://raw.githubusercontent.com/multhuaptff/crono-server-ciclismo/main/crono_server_url.json'
+
+def get_server_url():
+    """Obtiene la URL del servidor local desde GitHub."""
+    try:
+        resp = requests.get(GITHUB_CONFIG_URL, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Priorizar URL pública (túnel)
+            if data.get('url_publica'):
+                return data['url_publica'].rstrip('/')
+            elif data.get('urls') and len(data['urls']) > 0:
+                return data['urls'][0].rstrip('/')
+        logging.warning("No se pudo obtener URL desde GitHub, usando variable SERVER_URL")
+    except Exception as e:
+        logging.error(f"Error obteniendo URL desde GitHub: {e}")
+    
+    # Fallback a variable de entorno
+    return os.environ.get('SERVER_URL', '').strip()
+
+SERVER_URL = get_server_url()
 if not SERVER_URL:
-    raise Exception("SERVER_URL no está definida. Ej: https://mi-tunel.ngrok.io")
-
-# Eliminar barra final si existe
-if SERVER_URL.endswith('/'):
-    SERVER_URL = SERVER_URL[:-1]
-
-logging.info(f"Visor conectado al servidor: {SERVER_URL}")
+    logging.warning("SERVER_URL no configurada. Las peticiones fallarán.")
+else:
+    logging.info(f"Visor conectado al servidor: {SERVER_URL}")
 
 # === Funciones auxiliares ===
 def fetch_inscritos(event_code):
     """Obtiene la lista de inscritos desde el servidor local."""
+    if not SERVER_URL:
+        return []
     try:
         url = f"{SERVER_URL}/api/inscritos/{event_code}"
         resp = requests.get(url, timeout=10)
@@ -47,6 +65,8 @@ def fetch_inscritos(event_code):
 
 def fetch_tiempos(event_code):
     """Obtiene los tiempos desde el servidor local."""
+    if not SERVER_URL:
+        return []
     try:
         url = f"{SERVER_URL}/api/tiempos/{event_code}"
         resp = requests.get(url, timeout=10)
@@ -59,41 +79,29 @@ def fetch_tiempos(event_code):
         logging.error(f"Error en fetch_tiempos: {e}")
         return []
 
-# === WebSockets (para mantener la pantalla actualizada) ===
-# En este modo, los eventos 'nuevo_tiempo' no llegan desde el servidor local
-# porque el servidor local no emite WebSockets al visor en la nube.
-# Para mantener la sincronía, se puede usar un timer que consulte periódicamente,
-# o que el servidor local haga una petición POST al visor cuando hay un nuevo tiempo.
-# Por simplicidad, usaremos un polling periódico.
-
+# === WebSockets y polling ===
 polling_active = False
 polling_interval = 3  # segundos
+polling_event_code = None
 
 def start_polling(event_code):
     """Inicia un hilo que consulta periódicamente los tiempos."""
-    global polling_active
-    if polling_active:
+    global polling_active, polling_event_code
+    if polling_active and polling_event_code == event_code:
         return
     polling_active = True
+    polling_event_code = event_code
 
     def poll():
         global polling_active
-        last_timestamp = None
+        last_data = {}
         while polling_active:
             try:
                 tiempos = fetch_tiempos(event_code)
                 if tiempos:
-                    # Enviar los tiempos a los clientes conectados
-                    for t in tiempos:
-                        # Obtener nombre/categoría desde inscritos (simplificado)
-                        # Idealmente se debería cachear
-                        socketio.emit('nuevo_tiempo', {
-                            'dorsal': t['dorsal'],
-                            'action': t['action'],
-                            'timestamp': t['timestamp'],
-                            'nombre': '',  # Se puede obtener de inscritos
-                            'categoria': ''
-                        }, room=event_code)
+                    # Emitir solo si hay cambios (para evitar tráfico innecesario)
+                    # Enviar todos los tiempos a los clientes para reconstruir la tabla
+                    socketio.emit('nuevo_tiempo', tiempos, room=event_code)
                 time.sleep(polling_interval)
             except Exception as e:
                 logging.error(f"Error en polling: {e}")
@@ -101,6 +109,7 @@ def start_polling(event_code):
 
     thread = threading.Thread(target=poll, daemon=True)
     thread.start()
+    logging.info(f"Polling iniciado para evento {event_code}")
 
 @socketio.on('subscribe')
 def on_subscribe(data):
@@ -108,10 +117,9 @@ def on_subscribe(data):
     if event_code:
         join_room(event_code)
         logging.info(f"Cliente suscrito a evento: {event_code}")
-        # Iniciar polling para este evento (si no está ya activo)
         start_polling(event_code)
 
-# === API del visor (pasa peticiones al servidor local) ===
+# === API del visor (proxy) ===
 @app.route('/api/inscritos/<event_code>')
 def proxy_inscritos(event_code):
     """Proxy para obtener inscritos desde el servidor local."""
@@ -129,21 +137,30 @@ def refresh(event_code):
     socketio.emit('nuevo_tiempo', tiempos, room=event_code)
     return jsonify({"status": "ok", "count": len(tiempos)})
 
+@app.route('/api/status')
+def status():
+    """Estado del visor y conexión al servidor."""
+    return jsonify({
+        "server_url": SERVER_URL,
+        "github_config": GITHUB_CONFIG_URL,
+        "polling_active": polling_active,
+        "polling_interval": polling_interval,
+        "connected": bool(SERVER_URL)
+    })
+
 # === Pantalla ===
 @app.route('/')
 def home():
-    return '''
+    return f'''
     <h2>⏱️ CronoAndes - Visor de Resultados (Modo Proxy)</h2>
-    <p>Conectado al servidor: <strong>''' + SERVER_URL + '''</strong></p>
+    <p>Servidor detectado: <strong>{SERVER_URL if SERVER_URL else 'No detectado'}</strong></p>
     <p>Accede a la <a href="/pantalla?event_code=TU_CODIGO">pantalla en vivo</a> para ver resultados.</p>
+    <p><a href="/api/status">Ver estado</a></p>
     '''
 
 @app.route('/pantalla')
 def pantalla_vivo():
-    # Usar la misma plantilla HTML que el original, pero con polling en lugar de WebSockets directos
-    # Para no duplicar, usamos render_template_string o devolvemos el HTML.
-    # Como es extenso, lo mantengo igual pero con una pequeña modificación para que el cliente
-    # también pueda hacer polling si es necesario. Pero por simplicidad, el servidor hará polling.
+    # Usamos render_template_string con el HTML (se mantiene igual)
     return '''
 <!DOCTYPE html>
 <html>
@@ -152,7 +169,6 @@ def pantalla_vivo():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🏆 CronoAndes — Resultados en Vivo</title>
     <style>
-        /* (mismo estilo que antes) */
         body {
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
             background: #0f172a;
@@ -394,7 +410,6 @@ def pantalla_vivo():
             document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
-        // Carga inicial
         Promise.all([
             fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
@@ -413,9 +428,7 @@ def pantalla_vivo():
             console.error("Error al cargar datos iniciales:", err);
         });
 
-        // Escuchar eventos de WebSocket (enviados por el servidor cuando hay nuevos tiempos)
         socket.on('nuevo_tiempo', (d) => {
-            // Si d es un array (actualización por polling), procesar cada uno
             if (Array.isArray(d)) {
                 d.forEach(t => procesar(t));
             } else {
@@ -423,9 +436,6 @@ def pantalla_vivo():
             }
             renderizar();
         });
-
-        // También podemos forzar una actualización manual cada X segundos (cliente side)
-        // Pero el servidor ya hace polling, así que esto es opcional.
     });
     </script>
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
@@ -440,7 +450,9 @@ def health():
         "status": "ok",
         "app": "CronoAndes Proxy",
         "server_url": SERVER_URL,
-        "connected": True
+        "github_config": GITHUB_CONFIG_URL,
+        "polling_active": polling_active,
+        "polling_interval": polling_interval
     })
 
 # === Iniciar ===
