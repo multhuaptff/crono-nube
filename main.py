@@ -83,33 +83,31 @@ def fetch_tiempos(event_code):
 polling_active = False
 polling_interval = 3  # segundos
 polling_event_code = None
+last_tiempos_data = {}
 
 def start_polling(event_code):
     """Inicia un hilo que consulta periódicamente los tiempos."""
-    global polling_active, polling_event_code
+    global polling_active, polling_event_code, last_tiempos_data
     if polling_active and polling_event_code == event_code:
         return
     polling_active = True
     polling_event_code = event_code
-
+    
     def poll():
-        global polling_active
-        last_data = {}
+        global polling_active, last_tiempos_data
         while polling_active:
             try:
                 tiempos = fetch_tiempos(event_code)
                 if tiempos:
-                    # Emitir solo si hay cambios (para evitar tráfico innecesario)
                     # Enviar todos los tiempos a los clientes para reconstruir la tabla
                     socketio.emit('nuevo_tiempo', tiempos, room=event_code)
                 time.sleep(polling_interval)
             except Exception as e:
                 logging.error(f"Error en polling: {e}")
                 time.sleep(polling_interval)
-
+    
     thread = threading.Thread(target=poll, daemon=True)
     thread.start()
-    logging.info(f"Polling iniciado para evento {event_code}")
 
 @socketio.on('subscribe')
 def on_subscribe(data):
@@ -119,7 +117,7 @@ def on_subscribe(data):
         logging.info(f"Cliente suscrito a evento: {event_code}")
         start_polling(event_code)
 
-# === API del visor (proxy) ===
+# === API del visor ===
 @app.route('/api/inscritos/<event_code>')
 def proxy_inscritos(event_code):
     """Proxy para obtener inscritos desde el servidor local."""
@@ -137,33 +135,21 @@ def refresh(event_code):
     socketio.emit('nuevo_tiempo', tiempos, room=event_code)
     return jsonify({"status": "ok", "count": len(tiempos)})
 
-@app.route('/api/status')
-def status():
-    """Estado del visor y conexión al servidor."""
-    return jsonify({
-        "server_url": SERVER_URL,
-        "github_config": GITHUB_CONFIG_URL,
-        "polling_active": polling_active,
-        "polling_interval": polling_interval,
-        "connected": bool(SERVER_URL)
-    })
-
-# === Pantalla ===
+# === Página principal ===
 @app.route('/')
 def home():
-    return f'''
-    <h2>⏱️ CronoAndes - Visor de Resultados (Modo Proxy)</h2>
-    <p>Servidor detectado: <strong>{SERVER_URL if SERVER_URL else 'No detectado'}</strong></p>
+    return '''
+    <h2>⏱️ CronoAndes - Visor de Resultados</h2>
+    <p>Conectado al servidor: <strong>''' + SERVER_URL + '''</strong></p>
     <p>Accede a la <a href="/pantalla?event_code=TU_CODIGO">pantalla en vivo</a> para ver resultados.</p>
-    <p><a href="/api/status">Ver estado</a></p>
     '''
 
+# === Pantalla en vivo ===
 @app.route('/pantalla')
 def pantalla_vivo():
-    # Usamos render_template_string con el HTML (se mantiene igual)
     return '''
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -410,6 +396,7 @@ def pantalla_vivo():
             document.getElementById('contenedor-categorias').innerHTML = html;
         }
 
+        // Carga inicial
         Promise.all([
             fetch(`/api/inscritos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : []),
             fetch(`/api/tiempos/${encodeURIComponent(eventCode)}`).then(r => r.ok ? r.json() : [])
@@ -428,11 +415,15 @@ def pantalla_vivo():
             console.error("Error al cargar datos iniciales:", err);
         });
 
-        socket.on('nuevo_tiempo', (d) => {
-            if (Array.isArray(d)) {
-                d.forEach(t => procesar(t));
+        // Escuchar eventos de WebSocket
+        socket.on('nuevo_tiempo', (data) => {
+            // Si es un array (actualización por polling), procesar cada uno
+            if (Array.isArray(data)) {
+                // Limpiar y reconstruir desde cero
+                registros = {};
+                data.forEach(t => procesar(t));
             } else {
-                procesar(d);
+                procesar(data);
             }
             renderizar();
         });
@@ -450,9 +441,7 @@ def health():
         "status": "ok",
         "app": "CronoAndes Proxy",
         "server_url": SERVER_URL,
-        "github_config": GITHUB_CONFIG_URL,
-        "polling_active": polling_active,
-        "polling_interval": polling_interval
+        "connected": bool(SERVER_URL)
     })
 
 # === Iniciar ===
