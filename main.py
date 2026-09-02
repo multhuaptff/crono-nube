@@ -61,18 +61,34 @@ GITHUB_CONFIG_URL = os.environ.get(
     "https://raw.githubusercontent.com/multhuaptff/crono-server-ciclismo/main/crono_server_url.json",
 ).strip()
 
-# ---------- Resultados/snapshots ----------
-RESULTS_GITHUB_TOKEN = os.environ.get("RESULTS_GITHUB_TOKEN", "").strip()
-RESULTS_REPO_OWNER = os.environ.get("RESULTS_REPO_OWNER", "multhuaptff").strip()
-RESULTS_REPO_NAME = os.environ.get(
-    "RESULTS_REPO_NAME", "crono-server-ciclismo"
+# ---------- GitHub ----------
+# Compatibilidad con configuración actual de CronoAndes
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
+
+RESULTS_GITHUB_TOKEN = (
+    os.environ.get("RESULTS_GITHUB_TOKEN", "").strip()
+    or GITHUB_TOKEN
+)
+
+RESULTS_REPO_OWNER = os.environ.get(
+    "RESULTS_REPO_OWNER",
+    os.environ.get("REPO_OWNER", "multhuaptff")
 ).strip()
+
+RESULTS_REPO_NAME = os.environ.get(
+    "RESULTS_REPO_NAME",
+    os.environ.get("REPO_NAME", "crono-server-ciclismo")
+).strip()
+
 RESULTS_DIR = os.environ.get(
     "RESULTS_DIR", "resultados_cronoandes"
 ).strip().strip("/")
-PUBLIC_BASE_URL = os.environ.get(
-    "PUBLIC_BASE_URL", "https://live.say-berg.com"
-).strip().rstrip("/")
+
+PUBLIC_BASE_URL = (
+    os.environ.get("PUBLIC_BASE_URL", "").strip()
+    or os.environ.get("PUBLIC_CLOUD_URL", "").strip()
+    or "https://live.say-berg.com"
+).rstrip("/")
 
 # ---------- Catálogo de eventos ----------
 # Puede estar en el mismo repo de resultados para no provocar redeploy del servicio.
@@ -86,12 +102,13 @@ EVENTS_FILE = os.environ.get(
     "EVENTS_FILE", "eventos_cronoandes.json"
 ).strip().strip("/")
 
-# Token específico del catálogo. Para simplificar la configuración,
-# si no existe usamos el mismo token de resultados.
-EVENTS_GITHUB_TOKEN = os.environ.get(
-    "EVENTS_GITHUB_TOKEN",
-    RESULTS_GITHUB_TOKEN
-).strip()
+# Token específico del catálogo.
+# Si no existe, utiliza RESULTS_GITHUB_TOKEN o GITHUB_TOKEN.
+EVENTS_GITHUB_TOKEN = (
+    os.environ.get("EVENTS_GITHUB_TOKEN", "").strip()
+    or RESULTS_GITHUB_TOKEN
+    or GITHUB_TOKEN
+)
 
 # Token compartido únicamente entre CronoAndes y crono-nube.
 PUBLIC_PUBLISH_TOKEN = os.environ.get(
