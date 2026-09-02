@@ -354,6 +354,11 @@ def upsert_event(event):
         existing = current.get(slug)
 
     previous = existing or {}
+    # Normalizar el evento con el slug definitivo antes de compararlo.
+    # Evita commits repetidos cuando hubo una colisión de slug.
+    event = dict(event)
+    event["slug"] = slug
+
     comparable_keys = ("event_code", "slug", "nombre", "etapa_id", "etapa", "modalidad", "estado", "server_url")
     unchanged = bool(previous) and all(previous.get(k) == event.get(k) for k in comparable_keys)
     if unchanged:
@@ -566,19 +571,51 @@ def load_final_snapshot(event_code):
 # POLLING + SOCKET.IO
 # ============================================================
 def start_polling(event_code, server_url=None):
+    """
+    Inicia un único poller por event_code.
+
+    Si el poller ya existe y está activo, NO crea otro hilo:
+    únicamente actualiza server_url para que una renovación de túnel
+    tenga efecto inmediato en el siguiente ciclo de polling.
+    """
     event_code = str(event_code or "").strip()
     if not event_code:
         return
+
+    normalized_url = str(server_url or "").strip().rstrip("/")
+
     with pollers_lock:
-        if event_code in pollers and pollers[event_code].get("active"):
+        existing = pollers.get(event_code)
+
+        if existing and existing.get("active"):
+            previous_url = str(existing.get("server_url") or "").strip().rstrip("/")
+
+            if normalized_url and normalized_url != previous_url:
+                existing["server_url"] = normalized_url
+                logging.info(
+                    "🔄 Poller existente actualizado para %s: %s -> %s",
+                    event_code,
+                    previous_url or "(sin URL)",
+                    normalized_url,
+                )
             return
-        state = {"active": True, "server_url": server_url or ""}
+
+        state = {
+            "active": True,
+            "server_url": normalized_url,
+        }
         pollers[event_code] = state
 
-    logging.info("▶️ Polling iniciado para %s cada %ss", event_code, polling_interval)
+    logging.info(
+        "▶️ Polling iniciado para %s cada %ss | URL=%s",
+        event_code,
+        polling_interval,
+        normalized_url or "(auto)",
+    )
 
     def poll():
         last_signature = None
+
         while state["active"]:
             try:
                 payload = fetch_public_results(
@@ -604,9 +641,11 @@ def start_polling(event_code, server_url=None):
                             room=event_code,
                         )
                 socketio.sleep(polling_interval)
+
             except Exception as exc:
                 logging.error("Error polling %s: %s", event_code, exc, exc_info=True)
                 socketio.sleep(polling_interval)
+
         logging.info("⏹️ Polling detenido para %s", event_code)
 
     thread = threading.Thread(
