@@ -445,6 +445,52 @@ def get_server_url():
     return os.environ.get("SERVER_URL", "").strip().rstrip("/")
 
 
+def get_server_urls():
+    """
+    Obtiene todas las URLs públicas anunciadas por CronoAndes.
+
+    Ordena la URL preferida, las alternativas de urls[] y el respaldo local,
+    eliminando duplicados y barras finales.
+    """
+    urls = []
+
+    try:
+        response = requests.get(
+            GITHUB_CONFIG_URL,
+            timeout=8,
+            headers={"Cache-Control": "no-cache"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        preferred = data.get("url_publica")
+        if preferred:
+            urls.append(str(preferred).strip().rstrip("/"))
+
+        for value in (data.get("urls") or []):
+            value = str(value or "").strip().rstrip("/")
+            if value:
+                urls.append(value)
+    except Exception as exc:
+        logging.warning(
+            "No se pudieron leer las URLs públicas desde GitHub: %s",
+            exc,
+        )
+
+    fallback = os.environ.get("SERVER_URL", "").strip().rstrip("/")
+    if fallback:
+        urls.append(fallback)
+
+    unique = []
+    seen = set()
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(url)
+
+    return unique
+
+
 def resolve_server_url(force=False):
     global SERVER_URL, server_url_updated
     if (
@@ -465,48 +511,109 @@ def resolve_server_url(force=False):
 # API HACIA CRONOANDES
 # ============================================================
 def fetch_public_results(event_code, server_url=None):
+    """
+    Obtiene resultados probando primero la URL asociada y después todos los
+    túneles anunciados por CronoAndes.
+    """
     event_code = str(event_code or "").strip()
     if not event_code:
         return None
 
-    # En multi-evento, preferimos el server_url asociado al evento.
-    server_url = (server_url or "").strip().rstrip("/")
-    if not server_url:
-        associated = find_event_by_code(event_code)
-        if associated:
-            server_url = str(associated.get("server_url") or "").strip().rstrip("/")
-    if not server_url:
-        server_url = resolve_server_url()
-    if not server_url:
+    candidatos = []
+    preferred = str(server_url or "").strip().rstrip("/")
+    if preferred:
+        candidatos.append(preferred)
+
+    associated = find_event_by_code(event_code)
+    if associated:
+        associated_url = str(
+            associated.get("server_url") or ""
+        ).strip().rstrip("/")
+        if associated_url:
+            candidatos.append(associated_url)
+
+    candidatos.extend(get_server_urls())
+
+    unique_candidates = []
+    seen = set()
+    for candidate in candidatos:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+
+    if not unique_candidates:
+        logging.warning(
+            "No hay URLs públicas disponibles para event_code=%s",
+            event_code,
+        )
         return None
 
-    url = f"{server_url}/api/public/resultados/{quote(event_code, safe='')}"
-    try:
-        response = requests.get(
-            url,
-            timeout=8,
-            headers={"Accept": "application/json"},
+    for candidate in unique_candidates:
+        url = (
+            f"{candidate}/api/public/resultados/"
+            f"{quote(event_code, safe='')}"
         )
-        if response.status_code == 200:
-            return response.json()
+        try:
+            logging.debug(
+                "🌐 Consultando resultados %s mediante %s",
+                event_code,
+                candidate,
+            )
+            response = requests.get(
+                url,
+                timeout=8,
+                headers={
+                    "Accept": "application/json",
+                    "Cache-Control": "no-cache",
+                },
+            )
 
-        # Si falla y el evento no tiene URL específica, intentar legacy.
-        if response.status_code in (404, 409, 502, 503, 504):
-            associated_event = find_event_by_code(event_code)
-            if not associated_event:
-                refreshed = resolve_server_url(force=True)
-                if refreshed and refreshed != server_url:
-                    retry_url = f"{refreshed}/api/public/resultados/{quote(event_code, safe='')}"
-                    retry = requests.get(
-                        retry_url,
-                        timeout=8,
-                        headers={"Accept": "application/json"},
+            if response.status_code == 200:
+                payload = response.json()
+
+                if associated is not None:
+                    old_url = str(
+                        associated.get("server_url") or ""
+                    ).strip().rstrip("/")
+                    if old_url != candidate:
+                        associated["server_url"] = candidate
+                        logging.info(
+                            "🔄 URL LIVE actualizada en memoria: "
+                            "%s | %s → %s",
+                            event_code,
+                            old_url or "(vacía)",
+                            candidate,
+                        )
+
+                global SERVER_URL, server_url_updated
+                if SERVER_URL != candidate:
+                    SERVER_URL = candidate
+                    server_url_updated = time.time()
+                    logging.info(
+                        "🔗 URL CronoAndes funcional detectada: %s",
+                        candidate,
                     )
-                    if retry.status_code == 200:
-                        return retry.json()
-        logging.warning("GET resultados event_code=%s status=%s", event_code, response.status_code)
-    except requests.RequestException as exc:
-        logging.warning("Error consultando CronoAndes %s: %s", event_code, exc)
+                return payload
+
+            logging.warning(
+                "⚠️ CronoAndes no respondió por %s | "
+                "event_code=%s | status=%s",
+                candidate,
+                event_code,
+                response.status_code,
+            )
+        except requests.RequestException as exc:
+            logging.warning(
+                "⚠️ Falló túnel %s para %s: %s",
+                candidate,
+                event_code,
+                exc,
+            )
+
+    logging.warning(
+        "❌ Ningún túnel disponible para event_code=%s",
+        event_code,
+    )
     return None
 
 
@@ -637,7 +744,7 @@ def start_polling(event_code, server_url=None):
             try:
                 payload = fetch_public_results(
                     event_code,
-                    server_url=state.get("server_url") or None,
+                    server_url=None,
                 )
                 if payload:
                     signature = json.dumps(
