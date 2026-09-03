@@ -1041,6 +1041,14 @@ def refresh(event_code):
     })
 
 
+def validar_publish_token(req):
+    """Valida el token compartido entre CronoAndes y crono-nube."""
+    if not PUBLIC_PUBLISH_TOKEN:
+        return False
+    supplied = (req.headers.get("X-CronoAndes-Publish-Token", "") or "").strip()
+    return supplied == PUBLIC_PUBLISH_TOKEN
+
+
 @app.post("/api/public/finalizar/<event_code>")
 def public_finalizar(event_code):
     """Recibe snapshot desde CronoAndes y lo deja como oficial."""
@@ -1095,6 +1103,53 @@ def public_finalizar(event_code):
         "live_url": f"/live/{quote(slug, safe='')}",
         "final_url": f"/resultados/{quote(slug, safe='')}",
     })
+
+
+@app.route(
+    "/api/public/retirar/<event_code>",
+    methods=["POST"]
+)
+def retirar_resultados_publicos(event_code):
+    try:
+        if not validar_publish_token(request):
+            return jsonify({
+                "ok": False,
+                "error": "No autorizado"
+            }), 401
+
+        event_code = str(event_code or "").strip()
+
+        if not event_code:
+            return jsonify({
+                "ok": False,
+                "error": "event_code inválido"
+            }), 400
+
+        snapshot = load_final_snapshot(event_code)
+
+        if not snapshot:
+            return jsonify({
+                "ok": False,
+                "error": "No existe una publicación para este evento"
+            }), 404
+
+        snapshot["publicacion_activa"] = False
+        snapshot["status"] = "retirado"
+
+        save_final_snapshot(event_code, snapshot)
+
+        return jsonify({
+            "ok": True,
+            "event_code": event_code,
+            "publicacion_activa": False
+        })
+
+    except Exception as e:
+        app.logger.exception("Error retirando publicación")
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 500
 
 
 # ============================================================
