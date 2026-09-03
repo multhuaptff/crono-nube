@@ -1165,30 +1165,56 @@ RESULT_PAGE = r"""<!DOCTYPE html>
 .top-inner{max-width:1500px;margin:auto;display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap}.top h1{margin:0;font-size:1.6rem}.sub{opacity:.9;margin-top:5px}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,.14);font-weight:800}.dot{width:10px;height:10px;border-radius:50%;background:#22c55e}.dot.offline{background:#ef4444}
 main{max-width:1500px;margin:20px auto;padding:0 14px 40px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.toolbar input,.toolbar select{border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff}.hint{color:var(--muted);font-size:.88rem}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 5px 18px rgba(15,23,42,.05)}
 .panel-title{padding:13px 15px;background:#eef4ff;color:var(--header);font-size:1.05rem;font-weight:800;border-bottom:1px solid var(--line)}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:980px}th,td{padding:10px 9px;border-bottom:1px solid #edf1f7;text-align:center;white-space:nowrap}th{background:#f8fafc;color:#475569;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}td.name{text-align:left;min-width:240px;font-weight:700}.state-final{color:var(--success);font-weight:800}.state-race{color:var(--accent);font-weight:800}.state-dnf{color:var(--warning);font-weight:800}.progress{font-weight:800}.empty{padding:40px 20px;text-align:center;color:var(--muted)}.official{display:none;border-left:5px solid var(--success);padding:12px 15px;background:#f0fdf4;color:#166534;margin-bottom:16px;border-radius:8px}.offline{display:none;padding:18px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;margin-bottom:18px}footer{text-align:center;color:var(--muted);font-size:.8rem;margin-top:22px}
+.category-block{margin:0 0 18px;border-bottom:1px solid var(--line)}.category-block:last-child{margin-bottom:0;border-bottom:0}.category-title{padding:13px 15px;background:#eef4ff;color:var(--header);font-size:1rem;font-weight:900;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.category-table-wrap{overflow-x:auto}.category-table{width:100%;border-collapse:collapse;min-width:980px}.category-table th,.category-table td{padding:10px 9px;border-bottom:1px solid #edf1f7;text-align:center;white-space:nowrap}.category-table th{background:#f8fafc;color:#475569;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}.category-table td.name{text-align:left;min-width:240px;font-weight:700}
 </style>
 </head>
 <body>
 <div class="top"><div class="top-inner"><div><h1>🏆 CronoAndes — Resultados</h1><div id="event-info" class="sub">Cargando evento...</div></div><div class="status"><span id="dot" class="dot"></span><span id="status">CARGANDO</span></div></div></div>
 <main><div id="official" class="official">🏁 RESULTADOS OFICIALES PUBLICADOS</div><div id="offline" class="offline">🔴 CronoAndes no está transmitiendo resultados en este momento. La página volverá a actualizarse cuando el sistema esté disponible.</div>
 <div class="toolbar"><input id="search" type="search" placeholder="Buscar dorsal o nombre..."><select id="category"><option value="">Todas las categorías</option></select><span id="updated" class="hint">Última actualización: —</span></div>
-<div class="panel"><div class="panel-title">Clasificación</div><div class="table-wrap"><table><thead><tr><th>Pos.</th><th>Dorsal</th><th>Nombre</th><th>Categoría</th><th>Vueltas</th><th>Estado</th><th>Tiempo Total</th><th>Dif. General</th><th>Dif. Categoría</th></tr></thead><tbody id="tbody"></tbody></table></div><div id="empty" class="empty">Esperando resultados...</div></div><footer>CronoAndes · Resultados en vivo y oficiales</footer></main>
+<div class="panel"><div class="panel-title">Clasificación</div><div id="categories"></div><div id="empty" class="empty">Esperando resultados...</div></div><footer>CronoAndes · Resultados en vivo y oficiales</footer></main>
 <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 <script>
 (function(){
  const path=window.location.pathname.split('/').filter(Boolean); const mode=path[0]==='resultados'?'final':'live'; const slug=decodeURIComponent(path[1]||'');
- const tbody=document.getElementById('tbody'),empty=document.getElementById('empty'),dot=document.getElementById('dot'),status=document.getElementById('status'),eventInfo=document.getElementById('event-info'),updated=document.getElementById('updated'),search=document.getElementById('search'),category=document.getElementById('category'),official=document.getElementById('official'),offline=document.getElementById('offline');
+ const categories=document.getElementById('categories'),empty=document.getElementById('empty'),dot=document.getElementById('dot'),status=document.getElementById('status'),eventInfo=document.getElementById('event-info'),updated=document.getElementById('updated'),search=document.getElementById('search'),category=document.getElementById('category'),official=document.getElementById('official'),offline=document.getElementById('offline');
  let payload=null;
  function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
  function fmt(v){if(v==null||Number.isNaN(Number(v)))return '—';const n=Math.max(0,Number(v)),h=Math.floor(n/3600),m=Math.floor((n%3600)/60),s=Math.floor(n%60),ms=Math.floor((n-Math.floor(n))*1000);return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`}
  function diff(v){if(v==null||Number.isNaN(Number(v)))return '—';return Number(v)<=.000001?'LÍDER':'+'+fmt(v)}
  function stateClass(s){if(s==='Finalizado')return 'state-final';if(s==='En curso')return 'state-race';if(s==='DNF')return 'state-dnf';return ''}
  function render(){
-   const rows=payload?.resultados||[]; const cats=[...new Set(rows.map(r=>r.categoria||'SIN CATEGORÍA'))].sort(); const cur=category.value; category.innerHTML='<option value="">Todas las categorías</option>'; cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;category.appendChild(o)});if(cats.includes(cur))category.value=cur;
-   const q=search.value.trim().toLowerCase(),cat=category.value; const filtered=rows.filter(r=>(!q||String(r.dorsal||'').toLowerCase().includes(q)||String(r.nombre||'').toLowerCase().includes(q))&&(!cat||String(r.categoria||'')===cat));
-   tbody.innerHTML=filtered.map(r=>{const total=Number(r.vueltas_totales||0),done=Number(r.vueltas_completadas||0);return `<tr><td><strong>${r.puesto_general??'—'}</strong></td><td><strong>${esc(r.dorsal||'')}</strong></td><td class="name">${esc(r.nombre||'')}</td><td>${esc(r.categoria||'')}</td><td class="progress">${total?done+'/'+total:done}</td><td class="${stateClass(r.estado)}">${esc(r.estado||'')}</td><td>${fmt(r.tiempo_total_seg)}</td><td>${diff(r.diferencia_general_seg)}</td><td>${diff(r.diferencia_categoria_seg)}</td></tr>`}).join('');
-   empty.style.display=filtered.length?'none':'block'; empty.textContent=rows.length?'No hay corredores que coincidan con el filtro.':'Esperando resultados...';
-   const e=payload?.evento||{}; eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${e.modalidad?' · '+e.modalidad:''}`; updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
-   const isFinal=mode==='final'||payload?.status==='final'||e.estado==='finalizado'; official.style.display=isFinal?'block':'none'; offline.style.display=(payload?.status==='offline')?'block':'none'; dot.classList.toggle('offline',!isFinal&&payload?.estado_evento!=='en_vivo'); status.textContent=isFinal?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':'SIN CONEXIÓN');
+     const rows=payload?.resultados||[];
+     const cats=[...new Set(rows.map(r=>r.categoria||'SIN CATEGORÍA'))].sort((a,b)=>a.localeCompare(b,'es'));
+     const cur=category.value;
+     category.innerHTML='<option value="">Todas las categorías</option>';
+     cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;category.appendChild(o)});
+     if(cats.includes(cur)){category.value=cur}
+     const q=search.value.trim().toLowerCase();
+     const selectedCat=category.value;
+     const filtered=rows.filter(r=>{const dorsal=String(r.dorsal||'').toLowerCase();const nombre=String(r.nombre||'').toLowerCase();const cat=String(r.categoria||'SIN CATEGORÍA');return (!q||dorsal.includes(q)||nombre.includes(q))&&(!selectedCat||cat===selectedCat)});
+     categories.innerHTML='';
+     if(filtered.length){
+         const grouped={};
+         filtered.forEach(r=>{const cat=r.categoria||'SIN CATEGORÍA';if(!grouped[cat]){grouped[cat]=[]}grouped[cat].push(r)});
+         Object.keys(grouped).sort((a,b)=>a.localeCompare(b,'es')).forEach(cat=>{
+             const block=document.createElement('section');block.className='category-block';
+             const title=document.createElement('div');title.className='category-title';title.textContent=`🏆 ${cat}`;
+             const wrap=document.createElement('div');wrap.className='category-table-wrap';
+             const table=document.createElement('table');table.className='category-table';
+             table.innerHTML=`<thead><tr><th>Pos.</th><th>Dorsal</th><th>Nombre</th><th>Vueltas</th><th>Estado</th><th>Tiempo Total</th><th>Dif. General</th><th>Dif. Categoría</th></tr></thead><tbody></tbody>`;
+             const tbody=table.querySelector('tbody');
+             grouped[cat].forEach(r=>{const total=Number(r.vueltas_totales||0);const done=Number(r.vueltas_completadas||0);const tr=document.createElement('tr');tr.innerHTML=`<td><strong>${r.puesto_categoria??r.puesto_general??'—'}</strong></td><td><strong>${esc(r.dorsal||'')}</strong></td><td class="name">${esc(r.nombre||'')}</td><td class="progress">${total?done+'/'+total:done}</td><td class="${stateClass(r.estado)}">${esc(r.estado||'')}</td><td>${fmt(r.tiempo_total_seg)}</td><td>${diff(r.diferencia_general_seg)}</td><td>${diff(r.diferencia_categoria_seg)}</td>`;tbody.appendChild(tr)});
+             wrap.appendChild(table);block.appendChild(title);block.appendChild(wrap);categories.appendChild(block);
+         });
+     }
+     empty.style.display=filtered.length?'none':'block';
+     empty.textContent=rows.length?'No hay corredores que coincidan con el filtro.':'Esperando resultados...';
+     const e=payload?.evento||{};
+     eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${e.modalidad?' · '+e.modalidad:''}`;
+     updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
+     const isFinal=mode==='final'||payload?.status==='final'||e.estado==='finalizado';
+     official.style.display=isFinal?'block':'none';offline.style.display=(payload?.status==='offline')?'block':'none';dot.classList.toggle('offline',!isFinal&&payload?.estado_evento!=='en_vivo');status.textContent=isFinal?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':'SIN CONEXIÓN');
  }
  async function load(){
    if(!slug){empty.textContent='Evento no especificado.';return}
