@@ -941,16 +941,30 @@ def api_public_live_event(slug):
 
 @app.get("/api/public/final-event/<slug>")
 def api_public_final_event(slug):
+    """Devuelve el snapshot oficial solo cuando la publicación está activa."""
     event = find_event_by_slug(slug)
     if not event:
         return jsonify({"status": "not_found", "message": "Evento no encontrado."}), 404
-    payload = load_final_snapshot(str(event.get("event_code", "")).strip())
+
+    event_code = str(event.get("event_code", "")).strip()
+    payload = load_final_snapshot(event_code)
+
     if not payload:
         return jsonify({
             "status": "not_found",
             "evento": public_event_view(event),
             "message": "No existe un resultado oficial publicado.",
         }), 404
+
+    # El snapshot puede conservarse como historial, pero no debe
+    # mostrarse públicamente cuando la publicación fue retirada.
+    if not payload.get("publicacion_activa", False):
+        return jsonify({
+            "status": "not_published",
+            "evento": public_event_view(event),
+            "message": "La publicación oficial fue retirada.",
+        }), 404
+
     payload = dict(payload)
     payload.pop("event_code", None)
     payload["evento"] = public_event_view(event)
@@ -974,13 +988,23 @@ def api_public_live(event_code):
 
 @app.get("/api/public/final/<event_code>")
 def api_public_final(event_code):
+    """Devuelve únicamente resultados oficiales actualmente publicados."""
     payload = load_final_snapshot(event_code)
+
     if not payload:
         return jsonify({
             "status": "not_found",
             "event_code": event_code,
             "message": "No existe un resultado oficial publicado.",
         }), 404
+
+    if not payload.get("publicacion_activa", False):
+        return jsonify({
+            "status": "not_published",
+            "event_code": event_code,
+            "message": "La publicación oficial fue retirada.",
+        }), 404
+
     return jsonify(payload)
 
 
@@ -1069,9 +1093,17 @@ def public_finalizar(event_code):
     if str(payload.get("event_code", "")).strip() != str(event_code).strip():
         return jsonify({"status": "error", "error": "event_code inconsistente."}), 400
 
+    # ============================================================
+    # ESTADO OFICIAL DE PUBLICACIÓN
+    # ============================================================
+    # Cada POST /finalizar representa una publicación activa. Esto
+    # también permite republicar correctamente después de un retiro.
+    payload["event_code"] = str(event_code).strip()
+    payload["publicacion_activa"] = True
     payload["status"] = "final"
     payload["tipo_publicacion"] = "oficial"
     payload["publicado_en"] = payload.get("publicado_en") or now_iso()
+    payload["actualizado_en"] = now_iso()
 
     # Persistir resultado oficial.
     ok, detail = save_final_snapshot(event_code, payload)
@@ -1105,6 +1137,60 @@ def public_finalizar(event_code):
     })
 
 
+@app.get("/api/public/estado/<event_code>")
+def api_public_estado(event_code):
+    """
+    Devuelve únicamente el estado de la publicación oficial.
+
+    No calcula resultados ni consulta el servidor local; solo inspecciona
+    el snapshot oficial almacenado en crono-nube.
+    """
+    try:
+        event_code = str(event_code or "").strip()
+
+        if not event_code:
+            return jsonify({
+                "ok": False,
+                "error": "event_code inválido"
+            }), 400
+
+        snapshot = load_final_snapshot(event_code)
+
+        if not snapshot:
+            return jsonify({
+                "ok": True,
+                "event_code": event_code,
+                "publicacion_activa": False,
+                "final": False,
+                "existe_snapshot": False
+            }), 200
+
+        publicacion_activa = bool(snapshot.get("publicacion_activa", False))
+        status = str(snapshot.get("status", "")).strip().lower()
+
+        return jsonify({
+            "ok": True,
+            "event_code": event_code,
+            "publicacion_activa": publicacion_activa,
+            "final": bool(publicacion_activa and status == "final"),
+            "existe_snapshot": True,
+            "status": status,
+            "tipo_publicacion": snapshot.get("tipo_publicacion"),
+            "etapas": snapshot.get("etapas", []),
+            "actualizado_en": (
+                snapshot.get("actualizado_en")
+                or snapshot.get("publicado_en")
+            )
+        }), 200
+
+    except Exception as exc:
+        app.logger.exception("Error consultando estado de publicación")
+        return jsonify({
+            "ok": False,
+            "error": str(exc)
+        }), 500
+
+
 @app.route(
     "/api/public/retirar/<event_code>",
     methods=["POST"]
@@ -1135,8 +1221,20 @@ def retirar_resultados_publicos(event_code):
 
         snapshot["publicacion_activa"] = False
         snapshot["status"] = "retirado"
+        snapshot["actualizado_en"] = now_iso()
+        snapshot["retirado_en"] = now_iso()
 
-        save_final_snapshot(event_code, snapshot)
+        ok, detail = save_final_snapshot(event_code, snapshot)
+        if not ok:
+            app.logger.error(
+                "No se pudo retirar publicación %s: %s",
+                event_code,
+                detail,
+            )
+            return jsonify({
+                "ok": False,
+                "error": detail
+            }), 502
 
         return jsonify({
             "ok": True,
