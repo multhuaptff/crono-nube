@@ -8,10 +8,11 @@
 #   - No mostrar event_code al público.
 #   - Persistir el catálogo de eventos en GitHub para sobrevivir reinicios de Render.
 #   - Publicar snapshots finales en un repositorio de resultados separado.
+#   - Panel de administración para gestionar eventos y resultados.
 #
 # Este archivo es un reemplazo directo de main.py en crono-nube.
 
-from flask import Flask, jsonify, request, redirect, url_for
+from flask import Flask, jsonify, request, redirect, url_for, Response, render_template_string
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room
 import base64
@@ -24,6 +25,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from urllib.parse import quote
+from functools import wraps
 
 import requests
 
@@ -91,7 +93,6 @@ PUBLIC_BASE_URL = (
 ).rstrip("/")
 
 # ---------- Catálogo de eventos ----------
-# Puede estar en el mismo repo de resultados para no provocar redeploy del servicio.
 EVENTS_REPO_OWNER = os.environ.get(
     "EVENTS_REPO_OWNER", RESULTS_REPO_OWNER
 ).strip()
@@ -102,8 +103,6 @@ EVENTS_FILE = os.environ.get(
     "EVENTS_FILE", "eventos_cronoandes.json"
 ).strip().strip("/")
 
-# Token específico del catálogo.
-# Si no existe, utiliza RESULTS_GITHUB_TOKEN o GITHUB_TOKEN.
 EVENTS_GITHUB_TOKEN = (
     os.environ.get("EVENTS_GITHUB_TOKEN", "").strip()
     or RESULTS_GITHUB_TOKEN
@@ -115,6 +114,10 @@ PUBLIC_PUBLISH_TOKEN = os.environ.get(
     "PUBLIC_PUBLISH_TOKEN", ""
 ).strip()
 
+# ---------- ADMIN PANEL CREDENTIALS ----------
+ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "cronoandes2025")
+
 polling_interval = max(1, int(os.environ.get("POLLING_INTERVAL", "3")))
 
 
@@ -125,11 +128,9 @@ SERVER_URL = ""
 server_url_updated = 0.0
 SERVER_URL_TTL = 15.0
 
-# event_code -> {active, thread}
 pollers = {}
 pollers_lock = threading.Lock()
 
-# slug -> metadata del evento.
 events_cache = {}
 events_cache_loaded_at = 0.0
 events_cache_ttl = 10.0
@@ -210,8 +211,6 @@ def event_file_api_url():
 def load_events_from_github():
     """Lee el catálogo persistido en GitHub. Fallos => catálogo vacío."""
     if not EVENTS_GITHUB_TOKEN:
-        # En modo sin token no intentamos usar la API autenticada;
-        # aun así permitimos una lectura RAW pública.
         raw_url = (
             f"https://raw.githubusercontent.com/{EVENTS_REPO_OWNER}/"
             f"{EVENTS_REPO_NAME}/main/{EVENTS_FILE}"
@@ -300,11 +299,6 @@ def save_events_to_github(events, commit_message="Actualizar catálogo público"
                 elif existing.status_code != 404:
                     return False, f"GitHub GET catálogo devolvió {existing.status_code}."
 
-                # Fusiona con lo último que existe en GitHub.
-                # En actualizaciones multi-evento NO volvemos a escribir todo el
-                # snapshot local, porque podría estar desactualizado y sobrescribir
-                # cambios recientes de otro CronoAndes. Solo aplicamos las claves
-                # que esta operación modificó explícitamente.
                 if latest_events:
                     merged_events = dict(latest_events)
                 else:
@@ -334,8 +328,6 @@ def save_events_to_github(events, commit_message="Actualizar catálogo público"
                 )
                 if response.status_code in (200, 201):
                     return True, response.json()
-                # 409 => otro equipo escribió primero; repetir leyendo y fusionando
-                # el catálogo actualizado.
                 if response.status_code == 409 and attempt < 2:
                     time.sleep(0.5 * (attempt + 1))
                     continue
@@ -352,36 +344,69 @@ def save_events_to_github(events, commit_message="Actualizar catálogo público"
     return False, "No fue posible guardar catálogo."
 
 
+def delete_file_from_github(repo_owner, repo_name, file_path, token):
+    """
+    Elimina un archivo de un repositorio de GitHub.
+    """
+    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{quote(file_path, safe='/')}"
+    headers = github_api_headers(token)
+    try:
+        # Paso 1: Obtener el SHA del archivo
+        response = requests.get(api_url, headers=headers, timeout=10)
+        if response.status_code == 404:
+            return True, "El archivo no existe, no es necesario eliminar."
+        if response.status_code != 200:
+            return False, f"Error al obtener el archivo (status {response.status_code})."
+        
+        sha = response.json().get("sha")
+        if not sha:
+            return False, "No se pudo obtener el SHA del archivo."
+
+        # Paso 2: Eliminar el archivo
+        body = {
+            "message": f"Eliminar archivo {file_path}",
+            "sha": sha,
+            "branch": "main"
+        }
+        delete_response = requests.delete(api_url, headers=headers, json=body, timeout=15)
+        
+        if delete_response.status_code in (200, 204):
+            return True, "Archivo eliminado correctamente."
+        else:
+            try:
+                detail = delete_response.json()
+            except Exception:
+                detail = delete_response.text[:500]
+            return False, f"GitHub rechazó la eliminación: {detail}"
+            
+    except requests.RequestException as exc:
+        return False, f"Error de conexión con GitHub: {exc}"
+    except Exception as exc:
+        return False, f"Error inesperado al eliminar: {exc}"
+
+
 def upsert_event(event):
     global events_cache, events_cache_loaded_at
     event_code = str(event.get("event_code", "")).strip()
     if not event_code:
         return False, "event_code requerido."
 
-    # Recarga para integrar cambios de otros PCs antes de fusionar.
     current = refresh_events_cache(force=True)
     slug = str(event.get("slug") or slugify(event.get("nombre") or event_code)).strip()
 
-    # Evita colisión de slug entre dos códigos distintos.
     existing = current.get(slug)
     if existing and str(existing.get("event_code", "")) != event_code:
-        # Diferenciador estable que no revela el event_code al público.
         digest = __import__("hashlib").sha256(event_code.encode("utf-8")).hexdigest()[:8]
         slug = f"{slug}-{digest}"
         existing = current.get(slug)
 
     previous = existing or {}
-    # Normalizar el evento con el slug definitivo antes de compararlo.
-    # Evita commits repetidos cuando hubo una colisión de slug.
     event = dict(event)
     event["slug"] = slug
 
     comparable_keys = ("event_code", "slug", "nombre", "etapa_id", "etapa", "modalidad", "estado", "server_url")
     unchanged = bool(previous) and all(previous.get(k) == event.get(k) for k in comparable_keys)
     if unchanged:
-        # El evento no ha cambiado: no hacemos un nuevo commit a GitHub.
-        # Esto evita escrituras periódicas innecesarias mientras CronoAndes
-        # envía heartbeats/actualizaciones repetidas.
         return True, previous
 
     merged = dict(previous)
@@ -405,6 +430,43 @@ def upsert_event(event):
             events_cache_loaded_at = time.time()
         return True, merged
     return False, detail
+
+
+def delete_event_from_catalog(event_code):
+    """
+    Elimina un evento del catálogo de GitHub.
+    """
+    if not EVENTS_GITHUB_TOKEN:
+        return False, "No hay token de GitHub configurado."
+    
+    current_events = refresh_events_cache(force=True)
+    slug_to_remove = None
+    for slug, event in current_events.items():
+        if str(event.get("event_code", "")).strip() == str(event_code).strip():
+            slug_to_remove = slug
+            break
+    
+    if not slug_to_remove:
+        return False, f"No se encontró el evento con código {event_code} en el catálogo."
+
+    # Eliminar el evento del diccionario
+    del current_events[slug_to_remove]
+    
+    # Guardar el catálogo actualizado en GitHub
+    ok, detail = save_events_to_github(
+        current_events,
+        commit_message=f"Eliminar evento CronoAndes {event_code}",
+        preferred_updates=current_events  # Forzamos la actualización completa
+    )
+    
+    if ok:
+        # Limpiar caché
+        with events_cache_lock:
+            events_cache = current_events
+            events_cache_loaded_at = time.time()
+        return True, f"Evento {event_code} eliminado del catálogo."
+    else:
+        return False, f"Error al guardar el catálogo: {detail}"
 
 
 def find_event_by_slug(slug):
@@ -448,9 +510,6 @@ def get_server_url():
 def get_server_urls():
     """
     Obtiene todas las URLs públicas anunciadas por CronoAndes.
-
-    Ordena la URL preferida, las alternativas de urls[] y el respaldo local,
-    eliminando duplicados y barras finales.
     """
     urls = []
 
@@ -695,13 +754,6 @@ def load_final_snapshot(event_code):
 # POLLING + SOCKET.IO
 # ============================================================
 def start_polling(event_code, server_url=None):
-    """
-    Inicia un único poller por event_code.
-
-    Si el poller ya existe y está activo, NO crea otro hilo:
-    únicamente actualiza server_url para que una renovación de túnel
-    tenga efecto inmediato en el siguiente ciclo de polling.
-    """
     event_code = str(event_code or "").strip()
     if not event_code:
         return
@@ -798,6 +850,31 @@ def on_subscribe(data):
     logging.info("👀 Cliente suscrito a evento público: %s", slug or "legacy")
     event = find_event_by_code(event_code)
     start_polling(event_code, server_url=(event or {}).get("server_url"))
+
+
+# ============================================================
+# ADMIN AUTHENTICATION
+# ============================================================
+def check_auth(username, password):
+    return username == ADMIN_USER and password == ADMIN_PASS
+
+
+def authenticate():
+    """Sends a 401 response that enables basic auth."""
+    return Response(
+        'Acceso denegado. Por favor, introduce tus credenciales.', 401,
+        {'WWW-Authenticate': 'Basic realm="CronoAndes Admin"'}
+    )
+
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ============================================================
@@ -932,7 +1009,6 @@ def api_public_live_event(slug):
             "evento": public_event_view(event),
             "message": "CronoAndes no está transmitiendo resultados en este momento.",
         }), 503
-    # Ocultamos event_code del payload entregado al navegador.
     payload = dict(payload)
     payload.pop("event_code", None)
     payload["evento"] = public_event_view(event)
@@ -956,8 +1032,6 @@ def api_public_final_event(slug):
             "message": "No existe un resultado oficial publicado.",
         }), 404
 
-    # El snapshot puede conservarse como historial, pero no debe
-    # mostrarse públicamente cuando la publicación fue retirada.
     if not payload.get("publicacion_activa", False):
         return jsonify({
             "status": "not_published",
@@ -1093,11 +1167,6 @@ def public_finalizar(event_code):
     if str(payload.get("event_code", "")).strip() != str(event_code).strip():
         return jsonify({"status": "error", "error": "event_code inconsistente."}), 400
 
-    # ============================================================
-    # ESTADO OFICIAL DE PUBLICACIÓN
-    # ============================================================
-    # Cada POST /finalizar representa una publicación activa. Esto
-    # también permite republicar correctamente después de un retiro.
     payload["event_code"] = str(event_code).strip()
     payload["publicacion_activa"] = True
     payload["status"] = "final"
@@ -1105,13 +1174,11 @@ def public_finalizar(event_code):
     payload["publicado_en"] = payload.get("publicado_en") or now_iso()
     payload["actualizado_en"] = now_iso()
 
-    # Persistir resultado oficial.
     ok, detail = save_final_snapshot(event_code, payload)
     if not ok:
         logging.error("❌ No se pudo guardar resultado oficial %s: %s", event_code, detail)
         return jsonify({"status": "error", "error": detail}), 502
 
-    # Marcar catálogo como finalizado.
     event = find_event_by_code(event_code)
     if event:
         updated = dict(event)
@@ -1141,9 +1208,6 @@ def public_finalizar(event_code):
 def api_public_estado(event_code):
     """
     Devuelve únicamente el estado de la publicación oficial.
-
-    No calcula resultados ni consulta el servidor local; solo inspecciona
-    el snapshot oficial almacenado en crono-nube.
     """
     try:
         event_code = str(event_code or "").strip()
@@ -1248,6 +1312,138 @@ def retirar_resultados_publicos(event_code):
             "ok": False,
             "error": str(e)
         }), 500
+
+
+# ============================================================
+# ADMIN PANEL ENDPOINTS
+# ============================================================
+@app.get("/admin")
+@requires_auth
+def admin_dashboard():
+    """Muestra el panel de administración con la lista de eventos."""
+    events = refresh_events_cache(force=True)
+    # Convertir diccionario a lista para la plantilla
+    events_list = list(events.values())
+    # Ordenar por fecha de creación descendente
+    events_list.sort(key=lambda x: x.get("creado_en", ""), reverse=True)
+    
+    html = """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>CronoAndes - Panel de Administración</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f7fb; color: #0f172a; margin: 0; padding: 20px; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            h1 { color: #102a6b; }
+            table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+            th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #dbe3ef; }
+            th { background: #eef4ff; font-weight: 600; color: #102a6b; }
+            tr:hover { background: #f8fafc; }
+            .btn { padding: 6px 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; text-decoration: none; display: inline-block; font-size: 0.9em; }
+            .btn-danger { background: #ef4444; color: white; }
+            .btn-danger:hover { background: #dc2626; }
+            .btn-secondary { background: #e2e8f0; color: #0f172a; }
+            .btn-secondary:hover { background: #cbd5e1; }
+            .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+            .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
+            .badge-live { background: #dcfce7; color: #15803d; }
+            .badge-final { background: #e0e7ff; color: #3730a3; }
+            .empty { text-align: center; padding: 40px; color: #64748b; }
+            .alert { padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; }
+            .alert-success { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+            .alert-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+            .header-actions { margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header-actions">
+                <h1>🛠️ Panel de Administración</h1>
+                <a href="/live" class="btn btn-secondary" target="_blank">Ver Sitio Público</a>
+            </div>
+            
+            {% if message %}
+                <div class="alert alert-{{ message_type }}">{{ message }}</div>
+            {% endif %}
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Evento</th>
+                        <th>Código</th>
+                        <th>Modalidad</th>
+                        <th>Estado</th>
+                        <th>Actualizado</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for event in events %}
+                    <tr>
+                        <td><strong>{{ event.nombre }}</strong></td>
+                        <td><code>{{ event.event_code }}</code></td>
+                        <td>{{ event.modalidad or 'N/A' }}</td>
+                        <td>
+                            {% if event.estado == 'en_vivo' %}
+                                <span class="badge badge-live">EN VIVO</span>
+                            {% elif event.estado == 'finalizado' %}
+                                <span class="badge badge-final">FINALIZADO</span>
+                            {% else %}
+                                <span class="badge badge-secondary">{{ event.estado }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ event.actualizado_en[:19].replace('T', ' ') if event.actualizado_en else 'N/A' }}</td>
+                        <td>
+                            <div class="actions">
+                                <form action="/admin/delete-event/{{ event.event_code }}" method="POST" onsubmit="return confirm('¿Estás seguro de que quieres eliminar el evento {{ event.nombre }}? Esta acción no se puede deshacer.');" style="display:inline;">
+                                    <button type="submit" class="btn btn-danger">Eliminar Evento</button>
+                                </form>
+                                <form action="/admin/delete-results/{{ event.event_code }}" method="POST" onsubmit="return confirm('¿Estás seguro de que quieres eliminar los resultados oficiales de {{ event.nombre }}?');" style="display:inline;">
+                                    <button type="submit" class="btn btn-danger">Eliminar Resultados</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6" class="empty">No hay eventos registrados.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(html, events=events_list)
+
+
+@app.post("/admin/delete-event/<event_code>")
+@requires_auth
+def admin_delete_event(event_code):
+    """Elimina un evento del catálogo."""
+    ok, message = delete_event_from_catalog(event_code)
+    return redirect(url_for('admin_dashboard'))
+
+
+@app.post("/admin/delete-results/<event_code>")
+@requires_auth
+def admin_delete_results(event_code):
+    """Elimina el archivo de resultados oficiales de un evento."""
+    if not RESULTS_GITHUB_TOKEN:
+        return redirect(url_for('admin_dashboard'))
+    
+    path = github_result_path(event_code)
+    ok, message = delete_file_from_github(
+        RESULTS_REPO_OWNER,
+        RESULTS_REPO_NAME,
+        path,
+        RESULTS_GITHUB_TOKEN
+    )
+    return redirect(url_for('admin_dashboard'))
 
 
 # ============================================================
