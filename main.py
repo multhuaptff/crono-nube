@@ -9,8 +9,6 @@
 #   - Persistir el catálogo de eventos en GitHub para sobrevivir reinicios de Render.
 #   - Publicar snapshots finales en un repositorio de resultados separado.
 #   - Panel de administración para gestionar eventos y resultados.
-#
-# Este archivo es un reemplazo directo de main.py en crono-nube.
 
 from flask import Flask, jsonify, request, redirect, url_for, Response, render_template_string
 from flask_cors import CORS
@@ -64,7 +62,6 @@ GITHUB_CONFIG_URL = os.environ.get(
 ).strip()
 
 # ---------- GitHub ----------
-# Compatibilidad con configuración actual de CronoAndes
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 
 RESULTS_GITHUB_TOKEN = (
@@ -109,7 +106,6 @@ EVENTS_GITHUB_TOKEN = (
     or GITHUB_TOKEN
 )
 
-# Token compartido únicamente entre CronoAndes y crono-nube.
 PUBLIC_PUBLISH_TOKEN = os.environ.get(
     "PUBLIC_PUBLISH_TOKEN", ""
 ).strip()
@@ -269,8 +265,22 @@ def refresh_events_cache(force=False):
         return dict(events_cache)
 
 
-def save_events_to_github(events, commit_message="Actualizar catálogo público", preferred_updates=None):
-    """Actualiza el catálogo con merge seguro contra la última versión de GitHub."""
+def save_events_to_github(
+    events,
+    commit_message="Actualizar catálogo público",
+    preferred_updates=None,
+    replace=False,
+):
+    """
+    Actualiza el catálogo de GitHub.
+
+    Modos:
+      - replace=False (por defecto): MERGE con lo último de GitHub
+        + aplicar preferred_updates encima. Uso: upsert de un evento.
+      - replace=True: SOBRESCRIBE el catálogo completo con `events`.
+        Necesario para ELIMINACIONES, porque el merge reintroduce
+        los eventos borrados al leer latest_events.
+    """
     if not EVENTS_GITHUB_TOKEN:
         return False, "EVENTS_GITHUB_TOKEN/RESULTS_GITHUB_TOKEN no configurado; no se puede persistir catálogo."
 
@@ -299,12 +309,19 @@ def save_events_to_github(events, commit_message="Actualizar catálogo público"
                 elif existing.status_code != 404:
                     return False, f"GitHub GET catálogo devolvió {existing.status_code}."
 
-                if latest_events:
-                    merged_events = dict(latest_events)
-                else:
+                # ───── LÓGICA DIFERENCIADA ─────
+                if replace:
+                    # Modo eliminación: sobrescribir catálogo completo.
                     merged_events = dict(working_events)
-                updates = preferred_updates if preferred_updates is not None else working_events
-                merged_events.update(dict(updates or {}))
+                else:
+                    # Modo upsert: merge + updates.
+                    if latest_events:
+                        merged_events = dict(latest_events)
+                    else:
+                        merged_events = dict(working_events)
+                    updates = preferred_updates if preferred_updates is not None else working_events
+                    merged_events.update(dict(updates or {}))
+                # ───────────────────────────────
 
                 document = json.dumps(
                     {"version": 1, "actualizado_en": now_iso(), "eventos": merged_events},
@@ -345,40 +362,35 @@ def save_events_to_github(events, commit_message="Actualizar catálogo público"
 
 
 def delete_file_from_github(repo_owner, repo_name, file_path, token):
-    """
-    Elimina un archivo de un repositorio de GitHub.
-    """
+    """Elimina un archivo de un repositorio de GitHub."""
     api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/contents/{quote(file_path, safe='/')}"
     headers = github_api_headers(token)
     try:
-        # Paso 1: Obtener el SHA del archivo
         response = requests.get(api_url, headers=headers, timeout=10)
         if response.status_code == 404:
             return True, "El archivo no existe, no es necesario eliminar."
         if response.status_code != 200:
             return False, f"Error al obtener el archivo (status {response.status_code})."
-        
+
         sha = response.json().get("sha")
         if not sha:
             return False, "No se pudo obtener el SHA del archivo."
 
-        # Paso 2: Eliminar el archivo
         body = {
             "message": f"Eliminar archivo {file_path}",
             "sha": sha,
             "branch": "main"
         }
         delete_response = requests.delete(api_url, headers=headers, json=body, timeout=15)
-        
+
         if delete_response.status_code in (200, 204):
             return True, "Archivo eliminado correctamente."
-        else:
-            try:
-                detail = delete_response.json()
-            except Exception:
-                detail = delete_response.text[:500]
-            return False, f"GitHub rechazó la eliminación: {detail}"
-            
+        try:
+            detail = delete_response.json()
+        except Exception:
+            detail = delete_response.text[:500]
+        return False, f"GitHub rechazó la eliminación: {detail}"
+
     except requests.RequestException as exc:
         return False, f"Error de conexión con GitHub: {exc}"
     except Exception as exc:
@@ -435,38 +447,37 @@ def upsert_event(event):
 def delete_event_from_catalog(event_code):
     """
     Elimina un evento del catálogo de GitHub.
+
+    Usa replace=True en save_events_to_github porque el modo merge
+    reintroduce el evento borrado al leer latest_events.
     """
     if not EVENTS_GITHUB_TOKEN:
         return False, "No hay token de GitHub configurado."
-    
+
     current_events = refresh_events_cache(force=True)
     slug_to_remove = None
     for slug, event in current_events.items():
         if str(event.get("event_code", "")).strip() == str(event_code).strip():
             slug_to_remove = slug
             break
-    
+
     if not slug_to_remove:
         return False, f"No se encontró el evento con código {event_code} en el catálogo."
 
-    # Eliminar el evento del diccionario
     del current_events[slug_to_remove]
-    
-    # Guardar el catálogo actualizado en GitHub
+
     ok, detail = save_events_to_github(
         current_events,
         commit_message=f"Eliminar evento CronoAndes {event_code}",
-        preferred_updates=current_events  # Forzamos la actualización completa
+        replace=True,
     )
-    
+
     if ok:
-        # Limpiar caché
         with events_cache_lock:
             events_cache = current_events
             events_cache_loaded_at = time.time()
         return True, f"Evento {event_code} eliminado del catálogo."
-    else:
-        return False, f"Error al guardar el catálogo: {detail}"
+    return False, f"Error al guardar el catálogo: {detail}"
 
 
 def find_event_by_slug(slug):
@@ -508,9 +519,6 @@ def get_server_url():
 
 
 def get_server_urls():
-    """
-    Obtiene todas las URLs públicas anunciadas por CronoAndes.
-    """
     urls = []
 
     try:
@@ -570,10 +578,6 @@ def resolve_server_url(force=False):
 # API HACIA CRONOANDES
 # ============================================================
 def fetch_public_results(event_code, server_url=None):
-    """
-    Obtiene resultados probando primero la URL asociada y después todos los
-    túneles anunciados por CronoAndes.
-    """
     event_code = str(event_code or "").strip()
     if not event_code:
         return None
@@ -860,7 +864,6 @@ def check_auth(username, password):
 
 
 def authenticate():
-    """Sends a 401 response that enables basic auth."""
     return Response(
         'Acceso denegado. Por favor, introduce tus credenciales.', 401,
         {'WWW-Authenticate': 'Basic realm="CronoAndes Admin"'}
@@ -916,7 +919,6 @@ def status():
 
 @app.post("/api/public/registrar-evento")
 def registrar_evento():
-    """Registra/actualiza un evento de CronoAndes en el catálogo público."""
     if not PUBLIC_PUBLISH_TOKEN:
         return jsonify({"status": "error", "error": "PUBLIC_PUBLISH_TOKEN no configurado."}), 503
 
@@ -1017,7 +1019,6 @@ def api_public_live_event(slug):
 
 @app.get("/api/public/final-event/<slug>")
 def api_public_final_event(slug):
-    """Devuelve el snapshot oficial solo cuando la publicación está activa."""
     event = find_event_by_slug(slug)
     if not event:
         return jsonify({"status": "not_found", "message": "Evento no encontrado."}), 404
@@ -1062,7 +1063,6 @@ def api_public_live(event_code):
 
 @app.get("/api/public/final/<event_code>")
 def api_public_final(event_code):
-    """Devuelve únicamente resultados oficiales actualmente publicados."""
     payload = load_final_snapshot(event_code)
 
     if not payload:
@@ -1140,7 +1140,6 @@ def refresh(event_code):
 
 
 def validar_publish_token(req):
-    """Valida el token compartido entre CronoAndes y crono-nube."""
     if not PUBLIC_PUBLISH_TOKEN:
         return False
     supplied = (req.headers.get("X-CronoAndes-Publish-Token", "") or "").strip()
@@ -1149,7 +1148,6 @@ def validar_publish_token(req):
 
 @app.post("/api/public/finalizar/<event_code>")
 def public_finalizar(event_code):
-    """Recibe snapshot desde CronoAndes y lo deja como oficial."""
     if not PUBLIC_PUBLISH_TOKEN:
         return jsonify({
             "status": "error",
@@ -1206,9 +1204,6 @@ def public_finalizar(event_code):
 
 @app.get("/api/public/estado/<event_code>")
 def api_public_estado(event_code):
-    """
-    Devuelve únicamente el estado de la publicación oficial.
-    """
     try:
         event_code = str(event_code or "").strip()
 
@@ -1322,11 +1317,12 @@ def retirar_resultados_publicos(event_code):
 def admin_dashboard():
     """Muestra el panel de administración con la lista de eventos."""
     events = refresh_events_cache(force=True)
-    # Convertir diccionario a lista para la plantilla
     events_list = list(events.values())
-    # Ordenar por fecha de creación descendente
     events_list.sort(key=lambda x: x.get("creado_en", ""), reverse=True)
-    
+
+    flash_ok = request.args.get("flash_ok", "")
+    flash_err = request.args.get("flash_err", "")
+
     html = """
     <!DOCTYPE html>
     <html lang="es">
@@ -1364,11 +1360,14 @@ def admin_dashboard():
                 <h1>🛠️ Panel de Administración</h1>
                 <a href="/live" class="btn btn-secondary" target="_blank">Ver Sitio Público</a>
             </div>
-            
-            {% if message %}
-                <div class="alert alert-{{ message_type }}">{{ message }}</div>
+
+            {% if flash_ok %}
+                <div class="alert alert-success">{{ flash_ok }}</div>
             {% endif %}
-            
+            {% if flash_err %}
+                <div class="alert alert-error">{{ flash_err }}</div>
+            {% endif %}
+
             <table>
                 <thead>
                     <tr>
@@ -1392,10 +1391,10 @@ def admin_dashboard():
                             {% elif event.estado == 'finalizado' %}
                                 <span class="badge badge-final">FINALIZADO</span>
                             {% else %}
-                                <span class="badge badge-secondary">{{ event.estado }}</span>
+                                <span class="badge">{{ event.estado }}</span>
                             {% endif %}
                         </td>
-                        <td>{{ event.actualizado_en[:19].replace('T', ' ') if event.actualizado_en else 'N/A' }}</td>
+                        <td>{{ event.actualizado_en or 'N/A' }}</td>
                         <td>
                             <div class="actions">
                                 <form action="/admin/delete-event/{{ event.event_code }}" method="POST" onsubmit="return confirm('¿Estás seguro de que quieres eliminar el evento {{ event.nombre }}? Esta acción no se puede deshacer.');" style="display:inline;">
@@ -1418,7 +1417,12 @@ def admin_dashboard():
     </body>
     </html>
     """
-    return render_template_string(html, events=events_list)
+    return render_template_string(
+        html,
+        events=events_list,
+        flash_ok=flash_ok,
+        flash_err=flash_err,
+    )
 
 
 @app.post("/admin/delete-event/<event_code>")
@@ -1426,7 +1430,9 @@ def admin_dashboard():
 def admin_delete_event(event_code):
     """Elimina un evento del catálogo."""
     ok, message = delete_event_from_catalog(event_code)
-    return redirect(url_for('admin_dashboard'))
+    if ok:
+        return redirect(url_for('admin_dashboard', flash_ok=message))
+    return redirect(url_for('admin_dashboard', flash_err=message))
 
 
 @app.post("/admin/delete-results/<event_code>")
@@ -1434,8 +1440,8 @@ def admin_delete_event(event_code):
 def admin_delete_results(event_code):
     """Elimina el archivo de resultados oficiales de un evento."""
     if not RESULTS_GITHUB_TOKEN:
-        return redirect(url_for('admin_dashboard'))
-    
+        return redirect(url_for('admin_dashboard', flash_err="No hay token de GitHub configurado."))
+
     path = github_result_path(event_code)
     ok, message = delete_file_from_github(
         RESULTS_REPO_OWNER,
@@ -1443,7 +1449,9 @@ def admin_delete_results(event_code):
         path,
         RESULTS_GITHUB_TOKEN
     )
-    return redirect(url_for('admin_dashboard'))
+    if ok:
+        return redirect(url_for('admin_dashboard', flash_ok=message))
+    return redirect(url_for('admin_dashboard', flash_err=message))
 
 
 # ============================================================
