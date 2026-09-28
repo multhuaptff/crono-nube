@@ -10,7 +10,7 @@
 #   - Publicar snapshots finales en un repositorio de resultados separado.
 #   - Panel de administración para gestionar eventos y resultados.
 
-from flask import Flask, jsonify, request, redirect, url_for, Response, render_template_string
+from flask import Flask, jsonify, request, redirect, url_for, Response, render_template_string, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room
 import base64
@@ -37,6 +37,21 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+
+
+# ---------- Logo público ----------
+# El archivo cronoandes-logo.png se mantiene en la raíz del repositorio.
+# Esta ruta evita depender de /static/ y conserva el nombre exacto del archivo.
+@app.get("/cronoandes-logo.png")
+def cronoandes_logo():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return send_from_directory(
+        base_dir,
+        "cronoandes-logo.png",
+        mimetype="image/png",
+        max_age=300,
+    )
+
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY", "cronoandes-secure-key-2025"
 )
@@ -1584,7 +1599,7 @@ main{max-width:1500px;margin:0 auto;padding:34px 24px 64px}
   </div>
   <nav class="nav">
     <a class="brand" href="https://say-berg.com/" aria-label="Sayberg - Inicio">
-      <img src="/static/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
+      <img src="/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
     </a>
     <div class="navlinks" aria-label="Navegación principal">
       <a href="https://say-berg.com/">Inicio</a>
@@ -1644,7 +1659,7 @@ main{max-width:1500px;margin:0 auto;padding:34px 24px 64px}
 
   <footer class="footer">
     <div class="footer-brand">
-      <img src="/static/cronoandes-logo.png" alt="CronoAndes">
+      <img src="/cronoandes-logo.png" alt="CronoAndes">
     </div>
     <div class="footer-contact">
       <strong>Sayberg · CronoAndes</strong><br>
@@ -1815,7 +1830,7 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
   </div>
   <nav class="nav">
     <a class="brand" href="https://say-berg.com/" aria-label="Sayberg - Inicio">
-      <img src="/static/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
+      <img src="/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
     </a>
     <div class="navlinks" aria-label="Navegación principal">
       <a href="https://say-berg.com/">Inicio</a>
@@ -1867,7 +1882,7 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
 
   <footer>
     <div class="footer-brand">
-      <img src="/static/cronoandes-logo.png" alt="CronoAndes">
+      <img src="/cronoandes-logo.png" alt="CronoAndes">
     </div>
     <div class="footer-contact">
       <strong>Sayberg · CronoAndes</strong><br>
