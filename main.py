@@ -1462,21 +1462,197 @@ CATALOG_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CronoAndes — Eventos</title>
+<meta name="theme-color" content="#071a2c">
+<title>CronoAndes — Eventos en vivo</title>
 <style>
-:root{--bg:#f4f7fb;--panel:#fff;--text:#0f172a;--muted:#64748b;--line:#dbe3ef;--header:#102a6b;--header2:#173c96;--accent:#2563eb;--success:#15803d}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
-.top{background:linear-gradient(135deg,var(--header),var(--header2));color:#fff;padding:24px 16px;box-shadow:0 3px 12px rgba(15,23,42,.2)}
-.wrap{max-width:1200px;margin:auto}.top h1{margin:0;font-size:1.8rem}.top p{margin:6px 0 0;opacity:.88}
-main{max-width:1200px;margin:22px auto;padding:0 14px 50px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 5px 18px rgba(15,23,42,.05)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;padding:16px}.card{border:1px solid var(--line);border-radius:12px;padding:18px;background:#fff}.card h2{margin:0 0 7px;font-size:1.12rem}.meta{color:var(--muted);font-size:.92rem;margin-bottom:14px}.badge{display:inline-flex;gap:6px;align-items:center;font-weight:800;font-size:.82rem;padding:6px 9px;border-radius:999px;background:#eef4ff;color:var(--accent);margin-bottom:12px}.badge.final{background:#f0fdf4;color:var(--success)}
-.btns{display:flex;gap:8px;flex-wrap:wrap}.btn{display:inline-block;padding:9px 12px;border-radius:8px;text-decoration:none;font-weight:800;font-size:.88rem}.primary{background:var(--accent);color:#fff}.secondary{background:#eef2f7;color:var(--text)}.copy{cursor:pointer;border:0}
-.empty{padding:44px 20px;text-align:center;color:var(--muted)}footer{text-align:center;color:var(--muted);font-size:.82rem;margin-top:20px}
+:root{
+  --bg:#f3f7fb;
+  --surface:#ffffff;
+  --ink:#0b1b2f;
+  --muted:#607086;
+  --line:#dce6f0;
+  --navy:#061a2d;
+  --navy-2:#0b2945;
+  --lime:#9cff2f;
+  --lime-2:#78ef11;
+  --blue:#1388ff;
+  --shadow:0 16px 40px rgba(7,26,44,.10);
+  --radius:22px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.site-header{position:sticky;top:0;z-index:50;background:rgba(6,26,45,.96);backdrop-filter:blur(16px);box-shadow:0 6px 24px rgba(0,0,0,.16)}
+.topline{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:.78rem;color:#dbe8f5;background:#041221;border-bottom:1px solid rgba(255,255,255,.06)}
+.topline strong{color:#fff}
+.nav{max-width:1500px;margin:0 auto;padding:13px 24px;display:flex;align-items:center;gap:24px}
+.brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
+.brand img{width:235px;height:auto;display:block;border-radius:12px;background:#011e3e}
+.navlinks{display:flex;align-items:center;gap:24px;margin-left:auto}
+.navlinks a{text-decoration:none;color:#dbe8f5;font-size:.92rem;font-weight:700;position:relative;transition:transform .2s ease,color .2s ease}
+.navlinks a::after{content:"";position:absolute;left:0;right:0;bottom:-8px;height:2px;border-radius:99px;background:var(--lime);transform:scaleX(0);transform-origin:center;transition:transform .2s ease}
+.navlinks a:hover{color:#fff;transform:translateY(-1px)}
+.navlinks a:hover::after{transform:scaleX(1)}
+.nav-cta{margin-left:8px;background:linear-gradient(180deg,var(--lime),#7ff018);color:#05140a!important;padding:12px 18px;border-radius:14px;box-shadow:0 10px 22px rgba(156,255,47,.22);transition:transform .2s ease,box-shadow .2s ease}
+.nav-cta::after{display:none}
+.nav-cta:hover{transform:translateY(-3px)!important;box-shadow:0 16px 28px rgba(156,255,47,.30)}
+main{max-width:1500px;margin:0 auto;padding:34px 24px 64px}
+.hero{position:relative;overflow:hidden;border-radius:30px;background:
+  radial-gradient(circle at 78% 22%,rgba(156,255,47,.11),transparent 22%),
+  linear-gradient(135deg,#061a2d 0%,#0a2945 58%,#0b3a5b 100%);
+  color:#fff;padding:44px 44px 38px;box-shadow:var(--shadow)}
+.hero::after{content:"";position:absolute;width:420px;height:420px;border-radius:50%;right:-130px;bottom:-240px;background:rgba(156,255,47,.08)}
+.hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:1.1fr .9fr;align-items:center;gap:36px}
+.kicker{font-size:.75rem;letter-spacing:.24em;text-transform:uppercase;font-weight:900;color:var(--lime);margin-bottom:12px}
+.hero h1{font-size:clamp(2rem,4vw,4rem);line-height:.98;margin:0 0 14px;max-width:760px;letter-spacing:-.045em}
+.hero p{font-size:1.02rem;line-height:1.7;color:#d7e6f3;max-width:720px;margin:0}
+.hero-actions{margin-top:24px;display:flex;flex-wrap:wrap;gap:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;border:0;cursor:pointer;font:inherit;font-weight:900;padding:12px 17px;border-radius:14px;transition:transform .18s ease,box-shadow .18s ease,filter .18s ease}
+.btn:hover{transform:translateY(-3px) translateZ(0) scale(1.01);box-shadow:0 14px 24px rgba(3,16,29,.22)}
+.btn:active{transform:translateY(1px) scale(.99)}
+.btn-primary{background:linear-gradient(180deg,var(--lime),#7ff018);color:#061708}
+.btn-ghost{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.17);color:#fff}
+.hero-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:24px;max-width:760px}
+.mini{padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}
+.mini strong{display:block;font-size:.82rem;margin-bottom:4px}
+.mini span{display:block;color:#adc0d0;font-size:.74rem}
+.hero-card{justify-self:end;width:min(100%,500px);padding:20px;border-radius:24px;background:rgba(7,26,44,.78);border:1px solid rgba(255,255,255,.12);box-shadow:0 20px 50px rgba(0,0,0,.26);backdrop-filter:blur(18px)}
+.live-pill{display:inline-flex;align-items:center;gap:8px;font-weight:900;font-size:.78rem;padding:8px 12px;border-radius:999px;background:rgba(156,255,47,.10);border:1px solid rgba(156,255,47,.20);color:#eaffd7}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 6px rgba(156,255,47,.08);animation:pulse 1.8s infinite}
+.hero-card h2{margin:15px 0 6px;font-size:1.35rem}
+.hero-card p{font-size:.92rem;color:#b8c9d8;margin:0 0 16px;line-height:1.55}
+.statline{display:flex;gap:0;border-top:1px solid rgba(255,255,255,.10);padding-top:14px}
+.statline div{flex:1}
+.statline b{display:block;font-size:1rem;color:#fff}
+.statline span{font-size:.72rem;color:#8fa8bd}
+.section{padding-top:50px}
+.section-head{display:flex;align-items:end;justify-content:space-between;gap:20px;margin-bottom:18px}
+.section-head h2{margin:0;font-size:clamp(1.6rem,3vw,2.25rem);letter-spacing:-.035em}
+.section-head p{margin:6px 0 0;color:var(--muted)}
+.events-shell{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;padding:20px}
+.card{position:relative;background:#fff;border:1px solid var(--line);border-radius:20px;padding:22px;overflow:hidden;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+.card::before{content:"";position:absolute;inset:0 0 auto;height:4px;background:linear-gradient(90deg,var(--blue),var(--lime));opacity:.9}
+.card:hover{transform:translateY(-5px);box-shadow:0 22px 38px rgba(7,26,44,.12);border-color:#c7d8e7}
+.badge{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;background:#edf8e5;color:#2f7a16;font-weight:900;font-size:.73rem;margin-bottom:15px}
+.badge.final{background:#e8eef5;color:#476072}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.card h2{margin:0 0 8px;font-size:1.25rem;letter-spacing:-.02em}
+.meta{color:var(--muted);font-size:.86rem;line-height:1.55;min-height:42px}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.card .btn{padding:10px 13px;border-radius:12px;font-size:.82rem}
+.primary{background:var(--navy);color:#fff}
+.secondary{background:#eff4f8;color:var(--ink);border:1px solid #dbe6ef}
+.empty{padding:70px 20px;text-align:center;color:var(--muted)}
+.footer{margin-top:40px;border-top:1px solid var(--line);padding-top:24px;display:flex;align-items:center;justify-content:space-between;gap:18px;color:var(--muted);font-size:.82rem}
+.footer-brand img{width:190px;border-radius:10px;background:#011e3e}
+.footer-contact{text-align:right}
+.footer-contact strong{color:var(--ink)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.86)}}
+@media (max-width:1100px){
+  .navlinks{gap:16px}
+  .hero-grid{grid-template-columns:1fr}
+  .hero-card{justify-self:stretch;max-width:620px}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:820px){
+  .topline{padding:0 14px;font-size:.70rem}
+  .topline span:last-child{display:none}
+  .nav{padding:10px 14px;gap:12px;flex-wrap:wrap}
+  .brand img{width:200px}
+  .navlinks{width:100%;order:3;justify-content:center;flex-wrap:wrap;padding-top:4px}
+  .navlinks a{font-size:.83rem}
+  .nav-cta{padding:10px 13px}
+  main{padding:22px 14px 46px}
+  .hero{padding:30px 22px;border-radius:24px}
+  .hero-mini{grid-template-columns:1fr}
+  .grid{grid-template-columns:1fr;padding:14px}
+  .footer{flex-direction:column;align-items:flex-start}
+  .footer-contact{text-align:left}
+}
+@media (prefers-reduced-motion:reduce){
+  *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
+}
 </style>
 </head>
 <body>
-<div class="top"><div class="wrap"><h1>🏆 CronoAndes — Resultados</h1><p>Eventos en vivo y resultados oficiales</p></div></div>
-<main><div class="panel"><div id="events" class="grid"><div class="empty">Cargando eventos...</div></div></div><footer>CronoAndes · Resultados en vivo y oficiales</footer></main>
+<header class="site-header">
+  <div class="topline">
+    <span><strong>Sayberg</strong> · Tecnología aplicada al deporte</span>
+    <span>WhatsApp: +51 984 147 437 · sporsportandesperu@gmail.com</span>
+  </div>
+  <nav class="nav">
+    <a class="brand" href="https://say-berg.com/" aria-label="Sayberg - Inicio">
+      <img src="/static/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
+    </a>
+    <div class="navlinks" aria-label="Navegación principal">
+      <a href="https://say-berg.com/">Inicio</a>
+      <a href="https://say-berg.com/servicios.html">Servicios</a>
+      <a href="https://live.say-berg.com/live" aria-current="page">Resultados</a>
+      <a href="https://say-berg.com/eventos.html">Eventos</a>
+      <a href="https://say-berg.com/blog.html">Blog</a>
+      <a href="https://say-berg.com/nosotros.html">Nosotros</a>
+      <a href="https://say-berg.com/contacto.html">Contacto</a>
+    </div>
+    <a class="btn nav-cta" href="https://wa.me/51984147437?text=Hola%2C%20quisiera%20informaci%C3%B3n%20sobre%20el%20servicio%20de%20cronometraje%20deportivo%20de%20CronoAndes.">Solicitar cronometraje →</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-grid">
+      <div>
+        <div class="kicker">Cronometraje deportivo premium</div>
+        <h1>Resultados que se sienten tan claros como tu competencia.</h1>
+        <p>Consulta eventos, tiempos y clasificaciones de CronoAndes desde una experiencia web moderna, rápida y preparada para transmisión en vivo.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#events">Ver eventos en vivo ↓</a>
+          <a class="btn btn-ghost" href="https://say-berg.com/contacto.html">Solicitar cronometraje →</a>
+        </div>
+        <div class="hero-mini">
+          <div class="mini"><strong>EN VIVO</strong><span>Actualización automática</span></div>
+          <div class="mini"><strong>RESULTADOS</strong><span>Clasificación por categoría</span></div>
+          <div class="mini"><strong>CRONOANDES</strong><span>Powered by Sayberg</span></div>
+        </div>
+      </div>
+      <div class="hero-card">
+        <span class="live-pill"><span class="live-dot"></span> SISTEMA CRONOANDES</span>
+        <h2>Resultados en vivo y oficiales</h2>
+        <p>Selecciona un evento para consultar su transmisión LIVE o revisar sus resultados oficiales cuando estén publicados.</p>
+        <div class="statline">
+          <div><b>LIVE</b><span>Eventos activos</span></div>
+          <div><b>5 s</b><span>Actualización web</span></div>
+          <div><b>24/7</b><span>Consulta pública</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="events">
+    <div class="section-head">
+      <div>
+        <div class="kicker" style="color:#0877d8;margin-bottom:8px">Eventos</div>
+        <h2>Selecciona tu competencia</h2>
+        <p>Consulta el LIVE o los resultados oficiales de cada evento.</p>
+      </div>
+    </div>
+    <div class="events-shell">
+      <div id="events" class="grid"><div class="empty">Cargando eventos...</div></div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="footer-brand">
+      <img src="/static/cronoandes-logo.png" alt="CronoAndes">
+    </div>
+    <div class="footer-contact">
+      <strong>Sayberg · CronoAndes</strong><br>
+      +51 984 147 437 · sporsportandesperu@gmail.com
+    </div>
+  </footer>
+</main>
+
 <script>
 (function(){
  const box=document.getElementById('events');
@@ -1507,29 +1683,200 @@ main{max-width:1200px;margin:22px auto;padding:0 14px 50px}.panel{background:var
  load();setInterval(load,10000);
 })();
 </script>
-</body></html>"""
+
+</body>
+</html>"""
 
 
 RESULT_PAGE = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#071a2c">
 <title>CronoAndes — Resultados</title>
 <style>
-:root{--bg:#f4f7fb;--panel:#fff;--text:#0f172a;--muted:#64748b;--line:#dbe3ef;--header:#102a6b;--header2:#173c96;--accent:#2563eb;--success:#15803d;--warning:#b45309}
-*{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}
-.top{background:linear-gradient(135deg,var(--header),var(--header2));color:#fff;padding:20px 16px;position:sticky;top:0;z-index:10;box-shadow:0 3px 12px rgba(15,23,42,.18)}
-.top-inner{max-width:1500px;margin:auto;display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap}.top h1{margin:0;font-size:1.6rem}.sub{opacity:.9;margin-top:5px}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,.14);font-weight:800}.dot{width:10px;height:10px;border-radius:50%;background:#22c55e}.dot.offline{background:#ef4444}
-main{max-width:1500px;margin:20px auto;padding:0 14px 40px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.toolbar input,.toolbar select{border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:#fff}.hint{color:var(--muted);font-size:.88rem}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 5px 18px rgba(15,23,42,.05)}
-.panel-title{padding:13px 15px;background:#eef4ff;color:var(--header);font-size:1.05rem;font-weight:800;border-bottom:1px solid var(--line)}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:980px}th,td{padding:10px 9px;border-bottom:1px solid #edf1f7;text-align:center;white-space:nowrap}th{background:#f8fafc;color:#475569;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}td.name{text-align:left;min-width:240px;font-weight:700}.state-final{color:var(--success);font-weight:800}.state-race{color:var(--accent);font-weight:800}.state-dnf{color:var(--warning);font-weight:800}.progress{font-weight:800}.empty{padding:40px 20px;text-align:center;color:var(--muted)}.official{display:none;border-left:5px solid var(--success);padding:12px 15px;background:#f0fdf4;color:#166534;margin-bottom:16px;border-radius:8px}.offline{display:none;padding:18px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;margin-bottom:18px}footer{text-align:center;color:var(--muted);font-size:.8rem;margin-top:22px}
-.category-block{margin:0 0 18px;border-bottom:1px solid var(--line)}.category-block:last-child{margin-bottom:0;border-bottom:0}.category-title{padding:13px 15px;background:#eef4ff;color:var(--header);font-size:1rem;font-weight:900;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.category-table-wrap{overflow-x:auto}.category-table{width:100%;border-collapse:collapse;min-width:980px}.category-table th,.category-table td{padding:10px 9px;border-bottom:1px solid #edf1f7;text-align:center;white-space:nowrap}.category-table th{background:#f8fafc;color:#475569;font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}.category-table td.name{text-align:left;min-width:240px;font-weight:700}
+:root{
+  --bg:#f3f7fb;
+  --surface:#fff;
+  --ink:#0b1b2f;
+  --muted:#607086;
+  --line:#dce6f0;
+  --navy:#061a2d;
+  --navy-2:#0a2a46;
+  --lime:#9cff2f;
+  --blue:#1489ff;
+  --success:#2b9b3f;
+  --warning:#b7791f;
+  --danger:#d64545;
+  --shadow:0 16px 40px rgba(7,26,44,.09);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.site-header{position:sticky;top:0;z-index:50;background:rgba(6,26,45,.97);backdrop-filter:blur(15px);box-shadow:0 5px 22px rgba(0,0,0,.16)}
+.topline{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:#041221;color:#d6e5f2;border-bottom:1px solid rgba(255,255,255,.06);font-size:.76rem}
+.topline strong{color:#fff}
+.nav{max-width:1500px;margin:0 auto;padding:11px 24px;display:flex;align-items:center;gap:22px}
+.brand img{width:225px;height:auto;display:block;border-radius:11px;background:#011e3e}
+.navlinks{display:flex;align-items:center;gap:22px;margin-left:auto}
+.navlinks a{position:relative;color:#dbe8f5;text-decoration:none;font-weight:700;font-size:.9rem;transition:color .18s ease,transform .18s ease}
+.navlinks a::after{content:"";position:absolute;left:0;right:0;bottom:-7px;height:2px;border-radius:99px;background:var(--lime);transform:scaleX(0);transition:transform .18s ease}
+.navlinks a:hover{color:#fff;transform:translateY(-1px)}
+.navlinks a:hover::after{transform:scaleX(1)}
+.nav-cta{display:inline-flex;align-items:center;justify-content:center;margin-left:4px;padding:11px 16px;border-radius:13px;background:linear-gradient(180deg,var(--lime),#79ee13);color:#071507;text-decoration:none;font-weight:900;box-shadow:0 10px 22px rgba(156,255,47,.20);transition:transform .18s ease,box-shadow .18s ease}
+.nav-cta:hover{transform:translateY(-3px) scale(1.01);box-shadow:0 15px 28px rgba(156,255,47,.28)}
+.nav-cta:active{transform:translateY(1px) scale(.99)}
+main{max-width:1500px;margin:0 auto;padding:26px 24px 58px}
+.hero{position:relative;overflow:hidden;border-radius:28px;background:
+  radial-gradient(circle at 80% 22%,rgba(156,255,47,.12),transparent 22%),
+  linear-gradient(135deg,#061a2d,#0a2a46 58%,#0b3955);
+  color:#fff;padding:32px 34px;box-shadow:var(--shadow)}
+.hero::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;right:-150px;bottom:-310px;background:rgba(156,255,47,.06)}
+.hero-row{position:relative;z-index:1;display:flex;justify-content:space-between;align-items:flex-end;gap:26px}
+.kicker{font-size:.72rem;letter-spacing:.23em;text-transform:uppercase;font-weight:900;color:var(--lime);margin-bottom:9px}
+.hero h1{margin:0;font-size:clamp(1.85rem,3.4vw,3.1rem);letter-spacing:-.04em;line-height:1.02}
+.hero .sub{margin-top:10px;color:#c2d2df;max-width:820px;line-height:1.55}
+.status{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;padding:10px 13px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:999px;font-weight:900;font-size:.76rem}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 6px rgba(156,255,47,.08);animation:pulse 1.8s infinite}
+.dot.offline{background:#ef4444;box-shadow:0 0 0 6px rgba(239,68,68,.09)}
+.meta-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px}
+.event-chip{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);font-size:.78rem;color:#d8e6f1}
+main>.toolbar{margin-top:20px}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.toolbar input,.toolbar select{height:44px;border:1px solid var(--line);border-radius:13px;padding:0 14px;background:#fff;color:var(--ink);box-shadow:0 5px 15px rgba(7,26,44,.04);outline:none}
+.toolbar input{min-width:280px;flex:1}
+.toolbar input:focus,.toolbar select:focus{border-color:#9bc9f2;box-shadow:0 0 0 4px rgba(20,137,255,.08)}
+.hint{color:var(--muted);font-size:.82rem;margin-left:auto}
+.notice{display:none;margin-top:16px;padding:14px 16px;border-radius:16px}
+.official{border:1px solid #cde8d1;background:#f1fbf2;color:#20672b}
+.offline{border:1px solid #f6d9bb;background:#fff7ed;color:#9a5b17}
+.panel{margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:var(--shadow)}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:19px 20px;border-bottom:1px solid var(--line)}
+.panel-title{font-size:1.04rem;font-weight:900;letter-spacing:-.01em}
+.panel-caption{font-size:.78rem;color:var(--muted)}
+.category-block{margin:0;border-bottom:1px solid var(--line)}
+.category-block:last-child{border-bottom:0}
+.category-title{display:flex;align-items:center;gap:10px;padding:14px 18px;background:linear-gradient(90deg,#f6fbff,#fff);color:var(--navy);font-size:.95rem;font-weight:900;border-bottom:1px solid var(--line)}
+.category-title::before{content:"";width:6px;height:20px;border-radius:999px;background:linear-gradient(180deg,var(--blue),var(--lime))}
+.category-table-wrap{overflow-x:auto}
+.category-table{width:100%;border-collapse:collapse;min-width:980px}
+.category-table th,.category-table td{padding:11px 10px;border-bottom:1px solid #edf2f6;text-align:center;white-space:nowrap}
+.category-table tr:last-child td{border-bottom:0}
+.category-table th{background:#fbfcfe;color:#688098;font-size:.72rem;text-transform:uppercase;letter-spacing:.07em}
+.category-table tbody tr{transition:background .16s ease,transform .16s ease}
+.category-table tbody tr:hover{background:#f7fbff}
+.category-table td.name{text-align:left;min-width:260px;font-weight:800;color:#102438}
+.category-table td:nth-child(2){font-variant-numeric:tabular-nums;font-weight:900}
+.state-final{color:var(--success);font-weight:900}
+.state-race{color:var(--blue);font-weight:900}
+.state-dnf{color:var(--warning);font-weight:900}
+.progress{font-weight:900}
+.empty{padding:72px 20px;text-align:center;color:var(--muted)}
+footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:18px;color:var(--muted);font-size:.8rem}
+.footer-brand img{width:185px;border-radius:10px;background:#011e3e}
+.footer-contact{text-align:right;line-height:1.55}
+.footer-contact strong{color:var(--ink)}
+.helper{color:#7b8b9c}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.58;transform:scale(.88)}}
+@media (max-width:1100px){
+  .navlinks{gap:14px}
+  .hero-row{flex-direction:column;align-items:flex-start}
+  .hint{margin-left:0;width:100%}
+}
+@media (max-width:820px){
+  .topline{padding:0 14px;font-size:.68rem}
+  .topline span:last-child{display:none}
+  .nav{padding:9px 14px;flex-wrap:wrap;gap:10px}
+  .brand img{width:195px}
+  .navlinks{order:3;width:100%;justify-content:center;flex-wrap:wrap;padding-top:3px}
+  .navlinks a{font-size:.81rem}
+  .nav-cta{margin-left:auto;padding:9px 12px}
+  main{padding:18px 12px 44px}
+  .hero{padding:24px 20px;border-radius:22px}
+  .hero h1{font-size:2rem}
+  .toolbar input{min-width:0;width:100%}
+  .toolbar select{flex:1;min-width:180px}
+  .panel-head{align-items:flex-start;flex-direction:column}
+  footer{align-items:flex-start;flex-direction:column}
+  .footer-contact{text-align:left}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
 </style>
 </head>
 <body>
-<div class="top"><div class="top-inner"><div><h1>🏆 CronoAndes — Resultados</h1><div id="event-info" class="sub">Cargando evento...</div></div><div class="status"><span id="dot" class="dot"></span><span id="status">CARGANDO</span></div></div></div>
-<main><div id="official" class="official">🏁 RESULTADOS OFICIALES PUBLICADOS</div><div id="offline" class="offline">🔴 CronoAndes no está transmitiendo resultados en este momento. La página volverá a actualizarse cuando el sistema esté disponible.</div>
-<div class="toolbar"><input id="search" type="search" placeholder="Buscar dorsal o nombre..."><select id="category"><option value="">Todas las categorías</option></select><span id="updated" class="hint">Última actualización: —</span></div>
-<div class="panel"><div class="panel-title">Clasificación</div><div id="categories"></div><div id="empty" class="empty">Esperando resultados...</div></div><footer>CronoAndes · Resultados en vivo y oficiales</footer></main>
+<header class="site-header">
+  <div class="topline">
+    <span><strong>Sayberg</strong> · Tecnología aplicada al deporte</span>
+    <span>WhatsApp: +51 984 147 437 · sporsportandesperu@gmail.com</span>
+  </div>
+  <nav class="nav">
+    <a class="brand" href="https://say-berg.com/" aria-label="Sayberg - Inicio">
+      <img src="/static/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
+    </a>
+    <div class="navlinks" aria-label="Navegación principal">
+      <a href="https://say-berg.com/">Inicio</a>
+      <a href="https://say-berg.com/servicios.html">Servicios</a>
+      <a href="https://live.say-berg.com/live" aria-current="page">Resultados</a>
+      <a href="https://say-berg.com/eventos.html">Eventos</a>
+      <a href="https://say-berg.com/blog.html">Blog</a>
+      <a href="https://say-berg.com/nosotros.html">Nosotros</a>
+      <a href="https://say-berg.com/contacto.html">Contacto</a>
+    </div>
+    <a class="nav-cta" href="https://wa.me/51984147437?text=Hola%2C%20quisiera%20informaci%C3%B3n%20sobre%20el%20servicio%20de%20cronometraje%20deportivo%20de%20CronoAndes.">Solicitar cronometraje →</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-row">
+      <div>
+        <div class="kicker">Cronometraje deportivo premium</div>
+        <h1 id="hero-title">Resultados en vivo</h1>
+        <div id="event-info" class="sub">Cargando evento...</div>
+        <div class="meta-strip">
+          <span class="event-chip">Actualización automática</span>
+          <span class="event-chip">Clasificación por categoría</span>
+          <span class="event-chip">Powered by Sayberg</span>
+        </div>
+      </div>
+      <div class="status"><span id="dot" class="dot"></span><span id="status">CARGANDO</span></div>
+    </div>
+  </section>
+
+  <div id="official" class="notice official">✓ RESULTADOS OFICIALES PUBLICADOS</div>
+  <div id="offline" class="notice offline">CronoAndes no está transmitiendo resultados en este momento. La página volverá a actualizarse cuando el sistema esté disponible.</div>
+
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="Buscar dorsal o nombre..." aria-label="Buscar dorsal o nombre">
+    <select id="category" aria-label="Filtrar por categoría"><option value="">Todas las categorías</option></select>
+    <span id="updated" class="hint">Última actualización: —</span>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">Clasificación</div>
+      <div class="panel-caption">Resultados públicos de CronoAndes</div>
+    </div>
+    <div id="categories"></div>
+    <div id="empty" class="empty">Esperando resultados...</div>
+  </div>
+
+  <footer>
+    <div class="footer-brand">
+      <img src="/static/cronoandes-logo.png" alt="CronoAndes">
+    </div>
+    <div class="footer-contact">
+      <strong>Sayberg · CronoAndes</strong><br>
+      WhatsApp: +51 984 147 437<br>
+      <span class="helper">sporsportandesperu@gmail.com</span>
+    </div>
+  </footer>
+</main>
+
 <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 <script>
 (function(){
@@ -1580,7 +1927,8 @@ main{max-width:1500px;margin:20px auto;padding:0 14px 40px}.toolbar{display:flex
  const socket=io(window.location.origin,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity}); socket.on('connect',()=>{if(mode==='live')socket.emit('subscribe',{slug})});socket.on('public_resultados',d=>{if(mode==='live'){payload=d;payload.evento=payload.evento||{};render()}});
 })();
 </script>
-</body></html>"""
+</body>
+</html>"""
 
 
 @app.get("/")
