@@ -2411,7 +2411,7 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
 
         const headers=lapEvent
           ? '<th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Vueltas</th><th>Última vuelta</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Detalle</th>'
-          : '<th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Salida</th><th>Llegada</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Dif. General</th>';
+          : '<th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Dif. General</th>';
 
         block.innerHTML=`
           <div class="category-head">
@@ -2433,9 +2433,9 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
           const position=r.puesto_categoria??r.puesto_general??'—';
 
           if(!lapEvent){
-            // DH / carreras sin vueltas: la información principal es
-            // salida, llegada y tiempo total. No se muestra ninguna columna
-            // de vueltas ni "tiempo por vuelta".
+            // DH / carreras sin vueltas: la información pública principal es
+            // estado y tiempo total. No se muestran horas de salida/llegada,
+            // columnas de vueltas ni "tiempo por vuelta".
             const tr=document.createElement('tr');
             tr.className='main-row';
             tr.innerHTML=`
@@ -2446,8 +2446,6 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
                 ${r.club?`<span class="club">${esc(r.club)}</span>`:''}
               </td>
               <td class="state ${stateClass(r.estado)}">${esc(stateLabel(r.estado))}</td>
-              <td class="time">${clock(r.salida)}</td>
-              <td class="time">${clock(r.llegada)}</td>
               <td class="time">${fmt(r.tiempo_total_seg)}</td>
               <td class="diff">${diff(r.diferencia_categoria_seg)}</td>
               <td class="diff">${diff(r.diferencia_general_seg)}</td>`;
@@ -2493,8 +2491,6 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
             dr.innerHTML=`
               <td class="details-cell" colspan="9">
                 <div class="details-grid">
-                  <div class="detail-card"><div class="detail-label">Salida</div><div class="detail-value">${clock(r.salida)}</div></div>
-                  <div class="detail-card"><div class="detail-label">Llegada / última evidencia</div><div class="detail-value">${clock(r.llegada||r.ultima_vuelta_timestamp)}</div></div>
                   <div class="detail-card"><div class="detail-label">Vueltas restantes</div><div class="detail-value">${total?Math.max(total-done,0):'—'}</div></div>
                 </div>
                 <div class="detail-card" style="margin-top:12px">
