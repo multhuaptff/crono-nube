@@ -654,7 +654,7 @@ def fetch_public_results(event_code, server_url=None):
             )
 
             if response.status_code == 200:
-                payload = response.json()
+                payload = enrich_public_results_payload(response.json())
 
                 if associated is not None:
                     old_url = str(
@@ -700,6 +700,136 @@ def fetch_public_results(event_code, server_url=None):
         event_code,
     )
     return None
+
+
+
+# ============================================================
+# NORMALIZACIÓN PÚBLICA DE RESULTADOS
+# ============================================================
+def _lookup_laps_config(config, category):
+    """Busca de forma robusta la cantidad configurada de vueltas por categoría."""
+    if not isinstance(config, dict):
+        return 0
+
+    cat = str(category or "").strip()
+    if not cat:
+        return 0
+
+    candidates = {
+        cat,
+        cat.lower(),
+        cat.upper(),
+        re.sub(r"\s+", " ", cat).strip().lower(),
+    }
+
+    for key, value in config.items():
+        key_s = str(key or "").strip()
+        if (
+            key_s in candidates
+            or key_s.lower() in {c.lower() for c in candidates}
+        ):
+            try:
+                # Admite tanto número directo como estructuras simples.
+                if isinstance(value, dict):
+                    for k in ("vueltas", "vueltas_totales", "total"):
+                        if value.get(k) is not None:
+                            return max(0, int(value.get(k)))
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def enrich_public_results_payload(payload):
+    """Completa el payload sin cambiar la fuente de verdad del cronometraje.
+
+    La UI de escritorio usa `vueltas_etapa` + `vueltas_por_categoria` para
+    mostrar las vueltas. El portal web recibe además `vueltas[]`, pero algunos
+    payloads pueden traer `vueltas_totales=0`. Aquí recuperamos esa información
+    desde la configuración pública de la etapa y, como mínimo, desde las
+    vueltas realmente registradas.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    enriched = dict(payload)
+    config_laps = enriched.get("vueltas_por_categoria") or {}
+    rows = []
+
+    for raw in enriched.get("resultados") or []:
+        if not isinstance(raw, dict):
+            continue
+
+        row = dict(raw)
+        category = str(row.get("categoria") or "SIN CATEGORÍA").strip() or "SIN CATEGORÍA"
+
+        vueltas = row.get("vueltas")
+        if not isinstance(vueltas, list):
+            vueltas = []
+
+        clean_laps = [dict(v) for v in vueltas if isinstance(v, dict)]
+
+        # Compatibilidad: algunas versiones entregan TiemposVueltas +
+        # timestamps_vueltas en lugar del arreglo `vueltas`.
+        if not clean_laps:
+            lap_times = row.get("tiempos_vueltas") or row.get("TiemposVueltas") or []
+            lap_stamps = row.get("timestamps_vueltas") or []
+            if isinstance(lap_times, list):
+                clean_laps = [
+                    {
+                        "tiempo_seg": t,
+                        "timestamp": lap_stamps[i] if i < len(lap_stamps) else None,
+                    }
+                    for i, t in enumerate(lap_times)
+                ]
+
+        try:
+            reported_completed = int(row.get("vueltas_completadas") or 0)
+        except (TypeError, ValueError):
+            reported_completed = 0
+
+        completed = max(len(clean_laps), reported_completed)
+
+        configured = _lookup_laps_config(config_laps, category)
+
+        try:
+            reported_total = int(row.get("vueltas_totales") or 0)
+        except (TypeError, ValueError):
+            reported_total = 0
+
+        # Nunca inventar vueltas: usamos la configuración si existe; si no,
+        # las vueltas realmente registradas sirven como mínimo.
+        total = max(reported_total, configured, completed)
+
+        if total > 0:
+            remaining = max(total - completed, 0)
+        else:
+            remaining = 0
+
+        row["categoria"] = category
+        row["vueltas"] = clean_laps
+        row["vueltas_completadas"] = completed
+        row["vueltas_totales"] = total
+        row["vueltas_restantes"] = remaining
+        row["tiempos_vueltas"] = [
+            v.get("tiempo_seg")
+            for v in clean_laps
+            if v.get("tiempo_seg") is not None
+        ]
+
+        last = clean_laps[-1] if clean_laps else None
+        row["ultima_vuelta_seg"] = (
+            last.get("tiempo_seg") if last else row.get("ultima_vuelta_seg")
+        )
+        row["ultima_vuelta_timestamp"] = (
+            last.get("timestamp") if last else row.get("ultima_vuelta_timestamp")
+        )
+
+        # Mantener la llegada calculada por el servidor.
+        rows.append(row)
+
+    enriched["resultados"] = rows
+    return enriched
 
 
 # ============================================================
@@ -1193,7 +1323,7 @@ def api_public_live_event(slug):
     if not payload:
         # El CronoAndes local puede haberse cerrado o el túnel puede haber
         # caído. En ese caso, mostrar el último estado persistido automáticamente.
-        auto_payload = load_auto_snapshot(event_code)
+        auto_payload = enrich_public_results_payload(load_auto_snapshot(event_code))
         if auto_payload:
             auto_payload = dict(auto_payload)
             auto_payload.pop("event_code", None)
@@ -1225,7 +1355,7 @@ def api_public_final_event(slug):
         return jsonify({"status": "not_found", "message": "Evento no encontrado."}), 404
 
     event_code = str(event.get("event_code", "")).strip()
-    payload = load_final_snapshot(event_code)
+    payload = enrich_public_results_payload(load_final_snapshot(event_code))
 
     # Primero se respeta la publicación oficial existente.
     if payload and payload.get("publicacion_activa", False):
@@ -1237,7 +1367,7 @@ def api_public_final_event(slug):
 
     # Si todavía no existe una publicación oficial, ofrecer el último
     # estado guardado automáticamente. NO se marca como resultado oficial.
-    auto_payload = load_auto_snapshot(event_code)
+    auto_payload = enrich_public_results_payload(load_auto_snapshot(event_code))
     if auto_payload:
         auto_payload = dict(auto_payload)
         auto_payload.pop("event_code", None)
@@ -1280,12 +1410,12 @@ def api_public_live(event_code):
 
 @app.get("/api/public/final/<event_code>")
 def api_public_final(event_code):
-    payload = load_final_snapshot(event_code)
+    payload = enrich_public_results_payload(load_final_snapshot(event_code))
 
     if payload and payload.get("publicacion_activa", False):
         return jsonify(payload)
 
-    auto_payload = load_auto_snapshot(event_code)
+    auto_payload = enrich_public_results_payload(load_auto_snapshot(event_code))
     if auto_payload:
         auto_payload = dict(auto_payload)
         auto_payload["status"] = "auto_persisted"
@@ -1916,115 +2046,126 @@ RESULT_PAGE = r"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <meta name="theme-color" content="#071a2c">
 <title>CronoAndes — Resultados</title>
 <style>
 :root{
-  --bg:#f3f7fb;
-  --surface:#fff;
-  --ink:#0b1b2f;
-  --muted:#607086;
-  --line:#dce6f0;
-  --navy:#061a2d;
-  --navy-2:#0a2a46;
-  --lime:#9cff2f;
-  --blue:#1489ff;
-  --success:#2b9b3f;
-  --warning:#b7791f;
-  --danger:#d64545;
-  --shadow:0 16px 40px rgba(7,26,44,.09);
+  --bg:#f3f7fb;--surface:#fff;--ink:#0b1b2f;--muted:#607086;--line:#dce6f0;
+  --navy:#061a2d;--navy2:#0b2945;--lime:#9cff2f;--blue:#1388ff;
+  --green:#159447;--amber:#b45309;--red:#c2410c;--shadow:0 18px 44px rgba(7,26,44,.10);
+  --radius:22px
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+body{margin:0;background:linear-gradient(180deg,#eef4f9 0,#f7f9fb 100%);color:var(--ink);font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased}
 a{color:inherit}
-.site-header{position:sticky;top:0;z-index:50;background:rgba(6,26,45,.97);backdrop-filter:blur(15px);box-shadow:0 5px 22px rgba(0,0,0,.16)}
-.topline{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:#041221;color:#d6e5f2;border-bottom:1px solid rgba(255,255,255,.06);font-size:.76rem}
+.site-header{position:sticky;top:0;z-index:50;background:rgba(6,26,45,.97);backdrop-filter:blur(14px);box-shadow:0 7px 26px rgba(0,0,0,.16)}
+.topline{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:.72rem;color:#d8e6f1;background:#041221;border-bottom:1px solid rgba(255,255,255,.06)}
 .topline strong{color:#fff}
-.nav{max-width:1500px;margin:0 auto;padding:11px 24px;display:flex;align-items:center;gap:22px}
+.nav{max-width:1500px;margin:auto;padding:11px 24px;display:flex;align-items:center;gap:22px}
 .brand img{width:225px;height:auto;display:block;border-radius:11px;background:#011e3e}
-.navlinks{display:flex;align-items:center;gap:22px;margin-left:auto}
-.navlinks a{position:relative;color:#dbe8f5;text-decoration:none;font-weight:700;font-size:.9rem;transition:color .18s ease,transform .18s ease}
+.navlinks{display:flex;align-items:center;gap:21px;margin-left:auto}
+.navlinks a{text-decoration:none;color:#dbe8f5;font-size:.9rem;font-weight:800;position:relative;transition:.18s ease}
 .navlinks a::after{content:"";position:absolute;left:0;right:0;bottom:-7px;height:2px;border-radius:99px;background:var(--lime);transform:scaleX(0);transition:transform .18s ease}
 .navlinks a:hover{color:#fff;transform:translateY(-1px)}
 .navlinks a:hover::after{transform:scaleX(1)}
-.nav-cta{display:inline-flex;align-items:center;justify-content:center;margin-left:4px;padding:11px 16px;border-radius:13px;background:linear-gradient(180deg,var(--lime),#79ee13);color:#071507;text-decoration:none;font-weight:900;box-shadow:0 10px 22px rgba(156,255,47,.20);transition:transform .18s ease,box-shadow .18s ease}
+.nav-cta{padding:10px 15px;border-radius:13px;background:linear-gradient(180deg,var(--lime),#78ef11);color:#071507;text-decoration:none;font-weight:900;box-shadow:0 10px 22px rgba(156,255,47,.2);transition:.18s ease}
 .nav-cta:hover{transform:translateY(-3px) scale(1.01);box-shadow:0 15px 28px rgba(156,255,47,.28)}
-.nav-cta:active{transform:translateY(1px) scale(.99)}
-main{max-width:1500px;margin:0 auto;padding:26px 24px 58px}
-.hero{position:relative;overflow:hidden;border-radius:28px;background:
-  radial-gradient(circle at 80% 22%,rgba(156,255,47,.12),transparent 22%),
-  linear-gradient(135deg,#061a2d,#0a2a46 58%,#0b3955);
-  color:#fff;padding:32px 34px;box-shadow:var(--shadow)}
-.hero::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;right:-150px;bottom:-310px;background:rgba(156,255,47,.06)}
-.hero-row{position:relative;z-index:1;display:flex;justify-content:space-between;align-items:flex-end;gap:26px}
-.kicker{font-size:.72rem;letter-spacing:.23em;text-transform:uppercase;font-weight:900;color:var(--lime);margin-bottom:9px}
-.hero h1{margin:0;font-size:clamp(1.85rem,3.4vw,3.1rem);letter-spacing:-.04em;line-height:1.02}
-.hero .sub{margin-top:10px;color:#c2d2df;max-width:820px;line-height:1.55}
-.status{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;padding:10px 13px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:999px;font-weight:900;font-size:.76rem}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 6px rgba(156,255,47,.08);animation:pulse 1.8s infinite}
-.dot.offline{background:#ef4444;box-shadow:0 0 0 6px rgba(239,68,68,.09)}
-.meta-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:18px}
-.event-chip{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);font-size:.78rem;color:#d8e6f1}
-main>.toolbar{margin-top:20px}
-.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.toolbar input,.toolbar select{height:44px;border:1px solid var(--line);border-radius:13px;padding:0 14px;background:#fff;color:var(--ink);box-shadow:0 5px 15px rgba(7,26,44,.04);outline:none}
+main{max-width:1500px;margin:auto;padding:26px 24px 58px}
+.hero{position:relative;overflow:hidden;border-radius:28px;padding:28px 32px;color:#fff;background:
+linear-gradient(125deg,#061a2d 0,#0a2844 58%,#0b3955 100%);box-shadow:var(--shadow)}
+.hero::after{content:"";position:absolute;width:460px;height:460px;border-radius:50%;right:-180px;bottom:-330px;background:rgba(156,255,47,.08)}
+.hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:26px;align-items:end}
+.kicker{font-size:.72rem;letter-spacing:.23em;text-transform:uppercase;font-weight:900;color:var(--lime);margin-bottom:8px}
+.hero h1{margin:0;font-size:clamp(1.9rem,3.5vw,3.25rem);line-height:1;letter-spacing:-.045em}
+.hero-sub{margin-top:10px;color:#d5e3ed;max-width:920px;line-height:1.5}
+.status{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;padding:10px 14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.07);border-radius:999px;font-weight:900;font-size:.76rem}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 6px rgba(156,255,47,.08);animation:pulse 1.7s infinite}
+.dot.offline{background:#ef4444;box-shadow:0 0 0 6px rgba(239,68,68,.09);animation:none}
+.hero-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}
+.hero-chip{display:inline-flex;align-items:center;gap:7px;padding:8px 10px;border-radius:12px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.10);font-size:.76rem;color:#dbe9f2}
+.notice{display:none;margin-top:15px;padding:13px 15px;border-radius:16px;font-size:.88rem;line-height:1.45}
+.notice.official{background:#effaf1;border:1px solid #cbe8d0;color:#216a2c}
+.notice.persisted{background:#eef7ff;border:1px solid #cfe4f7;color:#175b8d}
+.notice.offline{background:#fff6eb;border:1px solid #f3d4b0;color:#925515}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:17px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:15px 16px;box-shadow:0 8px 25px rgba(7,26,44,.055)}
+.stat-label{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
+.stat-value{margin-top:5px;font-size:1.7rem;font-weight:950;letter-spacing:-.04em}
+.stat-note{margin-top:2px;color:#73849a;font-size:.74rem}
+.toolbar{margin-top:17px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.toolbar input,.toolbar select{height:44px;border:1px solid var(--line);border-radius:13px;background:#fff;color:var(--ink);padding:0 14px;outline:none;box-shadow:0 6px 18px rgba(7,26,44,.035)}
 .toolbar input{min-width:280px;flex:1}
-.toolbar input:focus,.toolbar select:focus{border-color:#9bc9f2;box-shadow:0 0 0 4px rgba(20,137,255,.08)}
-.hint{color:var(--muted);font-size:.82rem;margin-left:auto}
-.notice{display:none;margin-top:16px;padding:14px 16px;border-radius:16px}
-.official{border:1px solid #cde8d1;background:#f1fbf2;color:#20672b}
-.offline{border:1px solid #f6d9bb;background:#fff7ed;color:#9a5b17}
-.panel{margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:var(--shadow)}
-.panel-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:19px 20px;border-bottom:1px solid var(--line)}
-.panel-title{font-size:1.04rem;font-weight:900;letter-spacing:-.01em}
-.panel-caption{font-size:.78rem;color:var(--muted)}
-.category-block{margin:0;border-bottom:1px solid var(--line)}
+.toolbar input:focus,.toolbar select:focus{border-color:#98c9f0;box-shadow:0 0 0 4px rgba(20,137,255,.08)}
+.updated{margin-left:auto;color:var(--muted);font-size:.79rem}
+.results-shell{margin-top:17px;background:#fff;border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:var(--shadow)}
+.shell-head{display:flex;align-items:end;justify-content:space-between;gap:18px;padding:18px 20px;border-bottom:1px solid var(--line)}
+.shell-title{font-size:1.04rem;font-weight:950}
+.shell-caption{margin-top:3px;color:var(--muted);font-size:.76rem}
+.category-block{border-bottom:1px solid var(--line)}
 .category-block:last-child{border-bottom:0}
-.category-title{display:flex;align-items:center;gap:10px;padding:14px 18px;background:linear-gradient(90deg,#f6fbff,#fff);color:var(--navy);font-size:.95rem;font-weight:900;border-bottom:1px solid var(--line)}
-.category-title::before{content:"";width:6px;height:20px;border-radius:999px;background:linear-gradient(180deg,var(--blue),var(--lime))}
-.category-table-wrap{overflow-x:auto}
-.category-table{width:100%;border-collapse:collapse;min-width:980px}
-.category-table th,.category-table td{padding:11px 10px;border-bottom:1px solid #edf2f6;text-align:center;white-space:nowrap}
-.category-table tr:last-child td{border-bottom:0}
-.category-table th{background:#fbfcfe;color:#688098;font-size:.72rem;text-transform:uppercase;letter-spacing:.07em}
-.category-table tbody tr{transition:background .16s ease,transform .16s ease}
-.category-table tbody tr:hover{background:#f7fbff}
-.category-table td.name{text-align:left;min-width:260px;font-weight:800;color:#102438}
-.category-table td:nth-child(2){font-variant-numeric:tabular-nums;font-weight:900}
-.state-final{color:var(--success);font-weight:900}
-.state-race{color:var(--blue);font-weight:900}
-.state-dnf{color:var(--warning);font-weight:900}
-.progress{font-weight:900}
-.empty{padding:72px 20px;text-align:center;color:var(--muted)}
-footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:18px;color:var(--muted);font-size:.8rem}
-.footer-brand img{width:185px;border-radius:10px;background:#011e3e}
+.category-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 18px;background:linear-gradient(90deg,#f8fbfe,#fff)}
+.category-title-wrap{display:flex;align-items:center;gap:10px}
+.category-accent{width:7px;height:23px;border-radius:999px;background:linear-gradient(180deg,var(--blue),var(--lime))}
+.category-title{font-size:.96rem;font-weight:950}
+.category-meta{color:var(--muted);font-size:.75rem}
+.table-wrap{overflow-x:auto}
+table{width:100%;min-width:1120px;border-collapse:collapse}
+th,td{padding:11px 10px;border-bottom:1px solid #edf2f6;text-align:center;white-space:nowrap;vertical-align:middle}
+th{background:#fbfcfe;color:#688098;font-size:.69rem;text-transform:uppercase;letter-spacing:.07em}
+tbody tr.main-row{transition:background .16s ease}
+tbody tr.main-row:hover{background:#f7fbff}
+td.name{text-align:left;min-width:275px;font-weight:900;color:#102438}
+.name-main{display:flex;align-items:center;gap:8px}
+.club{display:block;margin-top:3px;color:#7a8ca0;font-weight:600;font-size:.73rem}
+.dorsal{font-variant-numeric:tabular-nums;font-weight:950}
+.progress{font-weight:950;font-variant-numeric:tabular-nums}
+.lap-highlight{font-weight:950}
+.state{font-weight:900}
+.state.final{color:var(--green)}
+.state.race{color:var(--blue)}
+.state.dnf{color:var(--amber)}
+.state.dns{color:#64748b}
+.time{font-variant-numeric:tabular-nums;font-weight:850}
+.diff{font-variant-numeric:tabular-nums;color:#496175}
+.btn-detail{border:1px solid #d5e1eb;background:#fff;color:#23445d;padding:7px 10px;border-radius:10px;font-weight:900;font-size:.72rem;cursor:pointer;transition:.16s ease}
+.btn-detail:hover{transform:translateY(-2px);box-shadow:0 8px 16px rgba(7,26,44,.08);border-color:#b9cfdf}
+.details-row{display:none;background:#f8fbfd}
+.details-row.open{display:table-row}
+.details-cell{text-align:left!important;white-space:normal!important;padding:14px 18px 17px!important}
+.details-grid{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:12px}
+.detail-card{background:#fff;border:1px solid #dfe9f1;border-radius:15px;padding:12px 13px}
+.detail-label{color:#72859a;text-transform:uppercase;font-size:.66rem;letter-spacing:.08em;font-weight:900}
+.detail-value{margin-top:4px;font-size:.93rem;font-weight:900}
+.laps{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+.lap-chip{padding:8px 10px;border-radius:12px;background:#eff7ff;border:1px solid #d4e8f8}
+.lap-chip strong{display:block;color:#165f8e;font-size:.68rem}
+.lap-chip span{display:block;margin-top:3px;color:#0d2941;font-weight:950;font-variant-numeric:tabular-nums}
+.empty{padding:65px 20px;text-align:center;color:var(--muted)}
+footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:16px;align-items:center;color:var(--muted);font-size:.78rem}
+.footer-brand img{width:175px;border-radius:10px;background:#011e3e}
 .footer-contact{text-align:right;line-height:1.55}
 .footer-contact strong{color:var(--ink)}
-.helper{color:#7b8b9c}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.58;transform:scale(.88)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.55;transform:scale(.88)}}
 @media (max-width:1100px){
-  .navlinks{gap:14px}
-  .hero-row{flex-direction:column;align-items:flex-start}
-  .hint{margin-left:0;width:100%}
+  .navlinks{gap:13px}.hero-grid{grid-template-columns:1fr}.updated{margin-left:0;width:100%}
 }
 @media (max-width:820px){
-  .topline{padding:0 14px;font-size:.68rem}
-  .topline span:last-child{display:none}
-  .nav{padding:9px 14px;flex-wrap:wrap;gap:10px}
-  .brand img{width:195px}
-  .navlinks{order:3;width:100%;justify-content:center;flex-wrap:wrap;padding-top:3px}
-  .navlinks a{font-size:.81rem}
+  .topline{padding:0 14px;font-size:.65rem}.topline span:last-child{display:none}
+  .nav{padding:9px 14px;flex-wrap:wrap;gap:9px}.brand img{width:190px}
+  .navlinks{order:3;width:100%;justify-content:center;flex-wrap:wrap}.navlinks a{font-size:.79rem}
   .nav-cta{margin-left:auto;padding:9px 12px}
-  main{padding:18px 12px 44px}
-  .hero{padding:24px 20px;border-radius:22px}
-  .hero h1{font-size:2rem}
-  .toolbar input{min-width:0;width:100%}
-  .toolbar select{flex:1;min-width:180px}
-  .panel-head{align-items:flex-start;flex-direction:column}
-  footer{align-items:flex-start;flex-direction:column}
-  .footer-contact{text-align:left}
+  main{padding:18px 12px 42px}.hero{padding:23px 20px;border-radius:22px}.hero h1{font-size:2rem}
+  .summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .toolbar input{min-width:0;width:100%}.toolbar select{flex:1;min-width:170px}
+  .details-grid{grid-template-columns:1fr}
+  footer{align-items:flex-start;flex-direction:column}.footer-contact{text-align:left}
+}
+@media (max-width:480px){
+  .brand img{width:165px}.nav-cta{font-size:.72rem}.hero h1{font-size:1.72rem}
+  .hero-meta{gap:6px}.hero-chip{font-size:.67rem;padding:7px 8px}
+  .summary{gap:8px}.stat{padding:12px}.stat-value{font-size:1.42rem}
 }
 @media (prefers-reduced-motion:reduce){
   *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
@@ -2041,7 +2182,7 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
     <a class="brand" href="https://say-berg.com/" aria-label="Sayberg - Inicio">
       <img src="/cronoandes-logo.png" alt="CronoAndes — Cronometraje deportivo premium">
     </a>
-    <div class="navlinks" aria-label="Navegación principal">
+    <div class="navlinks">
       <a href="https://say-berg.com/">Inicio</a>
       <a href="https://say-berg.com/servicios.html">Servicios</a>
       <a href="https://live.say-berg.com/live" aria-current="page">Resultados</a>
@@ -2056,15 +2197,16 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
 
 <main>
   <section class="hero">
-    <div class="hero-row">
+    <div class="hero-grid">
       <div>
         <div class="kicker">Cronometraje deportivo premium</div>
         <h1 id="hero-title">Resultados en vivo</h1>
-        <div id="event-info" class="sub">Cargando evento...</div>
-        <div class="meta-strip">
-          <span class="event-chip">Actualización automática</span>
-          <span class="event-chip">Clasificación por categoría</span>
-          <span class="event-chip">Powered by Sayberg</span>
+        <div id="event-info" class="hero-sub">Cargando evento...</div>
+        <div class="hero-meta">
+          <span class="hero-chip">⚡ Actualización automática</span>
+          <span class="hero-chip">🏆 Clasificación por categoría</span>
+          <span class="hero-chip">↻ Vueltas y parciales</span>
+          <span class="hero-chip">✓ Datos persistentes</span>
         </div>
       </div>
       <div class="status"><span id="dot" class="dot"></span><span id="status">CARGANDO</span></div>
@@ -2072,91 +2214,238 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
   </section>
 
   <div id="official" class="notice official">✓ RESULTADOS OFICIALES PUBLICADOS</div>
-  <div id="offline" class="notice offline">CronoAndes no está transmitiendo resultados en este momento. La página volverá a actualizarse cuando el sistema esté disponible.</div>
+  <div id="persisted" class="notice persisted">↻ Mostrando el último estado guardado automáticamente.</div>
+  <div id="offline" class="notice offline">CronoAndes no está transmitiendo en este momento. La página volverá a actualizarse cuando el sistema esté disponible.</div>
+
+  <section class="summary" aria-label="Resumen del evento">
+    <div class="stat"><div class="stat-label">Participantes</div><div id="s-part" class="stat-value">—</div><div class="stat-note">corredores registrados en resultados</div></div>
+    <div class="stat"><div class="stat-label">En carrera</div><div id="s-race" class="stat-value">—</div><div class="stat-note">estado actual</div></div>
+    <div class="stat"><div class="stat-label">Finalizados</div><div id="s-final" class="stat-value">—</div><div class="stat-note">con tiempo válido</div></div>
+    <div class="stat"><div class="stat-label">Vueltas</div><div id="s-laps" class="stat-value">—</div><div class="stat-note">pasadas registradas</div></div>
+  </section>
 
   <div class="toolbar">
-    <input id="search" type="search" placeholder="Buscar dorsal o nombre..." aria-label="Buscar dorsal o nombre">
+    <input id="search" type="search" placeholder="Buscar dorsal, deportista o club..." aria-label="Buscar dorsal, deportista o club">
     <select id="category" aria-label="Filtrar por categoría"><option value="">Todas las categorías</option></select>
-    <span id="updated" class="hint">Última actualización: —</span>
+    <span id="updated" class="updated">Última actualización: —</span>
   </div>
 
-  <div class="panel">
-    <div class="panel-head">
-      <div class="panel-title">Clasificación</div>
-      <div class="panel-caption">Resultados públicos de CronoAndes</div>
+  <section class="results-shell">
+    <div class="shell-head">
+      <div>
+        <div class="shell-title">Clasificación por categoría</div>
+        <div class="shell-caption">Elige un deportista para ver sus vueltas, parciales y evidencias horarias.</div>
+      </div>
     </div>
     <div id="categories"></div>
     <div id="empty" class="empty">Esperando resultados...</div>
-  </div>
+  </section>
 
   <footer>
-    <div class="footer-brand">
-      <img src="/cronoandes-logo.png" alt="CronoAndes">
-    </div>
-    <div class="footer-contact">
-      <strong>Sayberg · CronoAndes</strong><br>
-      WhatsApp: +51 984 147 437<br>
-      <span class="helper">sporsportandesperu@gmail.com</span>
-    </div>
+    <div class="footer-brand"><img src="/cronoandes-logo.png" alt="CronoAndes"></div>
+    <div class="footer-contact"><strong>Sayberg · CronoAndes</strong><br>WhatsApp: +51 984 147 437<br>sporsportandesperu@gmail.com</div>
   </footer>
 </main>
 
 <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 <script>
 (function(){
- const path=window.location.pathname.split('/').filter(Boolean); const mode=path[0]==='resultados'?'final':'live'; const slug=decodeURIComponent(path[1]||'');
- const categories=document.getElementById('categories'),empty=document.getElementById('empty'),dot=document.getElementById('dot'),status=document.getElementById('status'),eventInfo=document.getElementById('event-info'),updated=document.getElementById('updated'),search=document.getElementById('search'),category=document.getElementById('category'),official=document.getElementById('official'),offline=document.getElementById('offline');
- let payload=null;
- function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
- function fmt(v){if(v==null||Number.isNaN(Number(v)))return '—';const n=Math.max(0,Number(v)),h=Math.floor(n/3600),m=Math.floor((n%3600)/60),s=Math.floor(n%60),ms=Math.floor((n-Math.floor(n))*1000);return h?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`:`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`}
- function diff(v){if(v==null||Number.isNaN(Number(v)))return '—';return Number(v)<=.000001?'LÍDER':'+'+fmt(v)}
- function stateClass(s){if(s==='Finalizado')return 'state-final';if(s==='En curso')return 'state-race';if(s==='DNF')return 'state-dnf';return ''}
- function render(){
-     const rows=payload?.resultados||[];
-     const cats=[...new Set(rows.map(r=>r.categoria||'SIN CATEGORÍA'))].sort((a,b)=>a.localeCompare(b,'es'));
-     const cur=category.value;
-     category.innerHTML='<option value="">Todas las categorías</option>';
-     cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;category.appendChild(o)});
-     if(cats.includes(cur)){category.value=cur}
-     const q=search.value.trim().toLowerCase();
-     const selectedCat=category.value;
-     const filtered=rows.filter(r=>{const dorsal=String(r.dorsal||'').toLowerCase();const nombre=String(r.nombre||'').toLowerCase();const cat=String(r.categoria||'SIN CATEGORÍA');return (!q||dorsal.includes(q)||nombre.includes(q))&&(!selectedCat||cat===selectedCat)});
-     categories.innerHTML='';
-     if(filtered.length){
-         const grouped={};
-         filtered.forEach(r=>{const cat=r.categoria||'SIN CATEGORÍA';if(!grouped[cat]){grouped[cat]=[]}grouped[cat].push(r)});
-         Object.keys(grouped).sort((a,b)=>a.localeCompare(b,'es')).forEach(cat=>{
-             const block=document.createElement('section');block.className='category-block';
-             const title=document.createElement('div');title.className='category-title';title.textContent=`🏆 ${cat}`;
-             const wrap=document.createElement('div');wrap.className='category-table-wrap';
-             const table=document.createElement('table');table.className='category-table';
-             table.innerHTML=`<thead><tr><th>Pos.</th><th>Dorsal</th><th>Nombre</th><th>Vueltas</th><th>Estado</th><th>Tiempo Total</th><th>Dif. General</th><th>Dif. Categoría</th></tr></thead><tbody></tbody>`;
-             const tbody=table.querySelector('tbody');
-             grouped[cat].forEach(r=>{const total=Number(r.vueltas_totales||0);const done=Number(r.vueltas_completadas||0);const tr=document.createElement('tr');tr.innerHTML=`<td><strong>${r.puesto_categoria??r.puesto_general??'—'}</strong></td><td><strong>${esc(r.dorsal||'')}</strong></td><td class="name">${esc(r.nombre||'')}</td><td class="progress">${total?done+'/'+total:done}</td><td class="${stateClass(r.estado)}">${esc(r.estado||'')}</td><td>${fmt(r.tiempo_total_seg)}</td><td>${diff(r.diferencia_general_seg)}</td><td>${diff(r.diferencia_categoria_seg)}</td>`;tbody.appendChild(tr)});
-             wrap.appendChild(table);block.appendChild(title);block.appendChild(wrap);categories.appendChild(block);
-         });
-     }
-     empty.style.display=filtered.length?'none':'block';
-     empty.textContent=rows.length?'No hay corredores que coincidan con el filtro.':'Esperando resultados...';
-     const e=payload?.evento||{};
-     eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${e.modalidad?' · '+e.modalidad:''}`;
-     updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
-     const isOfficial=payload?.status==='final'||(mode==='final'&&payload?.status==='final')||e.estado==='finalizado'&&payload?.status==='final';
-     const isAutoPersisted=payload?.status==='auto_persisted'||payload?.persistencia_automatica===true;
-     official.style.display=isOfficial?'block':'none';
-     offline.style.display=(payload?.status==='offline')?'block':'none';
-     dot.classList.toggle('offline',!isOfficial&&payload?.estado_evento!=='en_vivo'&&!isAutoPersisted);
-     status.textContent=isOfficial?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':(isAutoPersisted?'ÚLTIMO ESTADO GUARDADO':'SIN CONEXIÓN'));
- }
- async function load(){
-   if(!slug){empty.textContent='Evento no especificado.';return}
-   try{const endpoint=mode==='final'?`/api/public/final-event/${encodeURIComponent(slug)}`:`/api/public/live-event/${encodeURIComponent(slug)}`;const r=await fetch(endpoint,{cache:'no-store'});if(!r.ok)throw new Error(r.status);payload=await r.json();render()}catch(err){dot.classList.add('offline');status.textContent='SIN CONEXIÓN';offline.style.display=mode==='live'?'block':'none';empty.textContent=mode==='live'?'Esperando conexión con CronoAndes...':'No existe un resultado guardado.';empty.style.display='block'}}
- search.addEventListener('input',render);category.addEventListener('change',render);load(); if(mode==='live')setInterval(load,5000);
- const socket=io(window.location.origin,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity}); socket.on('connect',()=>{if(mode==='live')socket.emit('subscribe',{slug})});socket.on('public_resultados',d=>{if(mode==='live'){payload=d;payload.evento=payload.evento||{};render()}});
+  const path=window.location.pathname.split('/').filter(Boolean);
+  const mode=path[0]==='resultados'?'final':'live';
+  const slug=decodeURIComponent(path[1]||'');
+  const $=id=>document.getElementById(id);
+  const categories=$('categories'),empty=$('empty'),dot=$('dot'),status=$('status'),
+        eventInfo=$('event-info'),updated=$('updated'),search=$('search'),category=$('category'),
+        official=$('official'),persisted=$('persisted'),offline=$('offline');
+  let payload=null, detailSeq=0;
+
+  function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function num(v){const n=Number(v);return Number.isFinite(n)?n:null;}
+  function fmt(v){
+    const n=num(v); if(n===null) return '—';
+    const x=Math.max(0,n),h=Math.floor(x/3600),m=Math.floor((x%3600)/60),s=Math.floor(x%60),ms=Math.floor((x-Math.floor(x))*1000);
+    const tail=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`;
+    return h?`${String(h).padStart(2,'0')}:${tail}`:tail;
+  }
+  function clock(v){
+    if(!v) return '—';
+    const d=new Date(v); if(Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('es-PE',{hour12:false});
+  }
+  function diff(v){const n=num(v); if(n===null) return '—'; return n<=.000001?'LÍDER':'+'+fmt(n);}
+  function stateClass(s){if(s==='Finalizado')return'final';if(s==='En curso')return'race';if(s==='DNF')return'dnf';if(s==='DNS'||s==='No iniciado')return'dns';return'';}
+  function stateLabel(s){return s||'SIN ESTADO';}
+  function lapsOf(r){return Array.isArray(r.vueltas)?r.vueltas.filter(v=>v&&typeof v==='object'):[];}
+  function lapsTotal(r){const t=num(r.vueltas_totales)||0,d=lapsOf(r).length;return Math.max(t,d);}
+  function lapsDone(r){return lapsOf(r).length||num(r.vueltas_completadas)||0;}
+
+  function updateSummary(rows){
+    const final=rows.filter(r=>r.estado==='Finalizado');
+    const race=rows.filter(r=>r.estado==='En curso');
+    const lapCount=rows.reduce((a,r)=>a+lapsDone(r),0);
+    $('s-part').textContent=rows.length;
+    $('s-race').textContent=race.length;
+    $('s-final').textContent=final.length;
+    $('s-laps').textContent=lapCount;
+  }
+
+  function render(){
+    const rows=payload?.resultados||[];
+    updateSummary(rows);
+
+    const cats=[...new Set(rows.map(r=>r.categoria||'SIN CATEGORÍA'))].sort((a,b)=>a.localeCompare(b,'es'));
+    const current=category.value;
+    category.innerHTML='<option value="">Todas las categorías</option>';
+    cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;category.appendChild(o)});
+    if(cats.includes(current)) category.value=current;
+
+    const q=search.value.trim().toLowerCase();
+    const selected=category.value;
+    const filtered=rows.filter(r=>{
+      const dorsal=String(r.dorsal||'').toLowerCase(),name=String(r.nombre||'').toLowerCase(),club=String(r.club||'').toLowerCase(),cat=String(r.categoria||'SIN CATEGORÍA');
+      return (!q||dorsal.includes(q)||name.includes(q)||club.includes(q))&&(!selected||cat===selected);
+    });
+
+    categories.innerHTML='';
+    if(filtered.length){
+      const grouped={};
+      filtered.forEach(r=>{const cat=r.categoria||'SIN CATEGORÍA';(grouped[cat]??=[]).push(r)});
+      Object.keys(grouped).sort((a,b)=>a.localeCompare(b,'es')).forEach(cat=>{
+        const block=document.createElement('section');block.className='category-block';
+        const list=grouped[cat];
+        const finished=list.filter(r=>r.estado==='Finalizado').length;
+        const inRace=list.filter(r=>r.estado==='En curso').length;
+
+        block.innerHTML=`
+          <div class="category-head">
+            <div class="category-title-wrap">
+              <span class="category-accent"></span>
+              <div><div class="category-title">${esc(cat)}</div>
+              <div class="category-meta">${list.length} participantes · ${finished} finalizados · ${inRace} en carrera</div></div>
+            </div>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr>
+              <th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Vueltas</th><th>Última vuelta</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Detalle</th>
+            </tr></thead><tbody></tbody>
+          </table></div>`;
+        const tbody=block.querySelector('tbody');
+
+        list.forEach(r=>{
+          const id=++detailSeq, laps=lapsOf(r), total=lapsTotal(r), done=lapsDone(r);
+          const last=num(r.ultima_vuelta_seg);
+          const position=r.puesto_categoria??r.puesto_general??'—';
+          const toggle=laps.length?`<button class="btn-detail" data-target="detail-${id}" aria-expanded="false">Ver vueltas</button>`:'<span class="category-meta">—</span>';
+
+          const tr=document.createElement('tr');tr.className='main-row';
+          tr.innerHTML=`
+            <td><strong>${position}</strong></td>
+            <td class="dorsal">${esc(r.dorsal||'')}</td>
+            <td class="name">
+              <div class="name-main">${esc(r.nombre||'Sin nombre')}</div>
+              ${r.club?`<span class="club">${esc(r.club)}</span>`:''}
+            </td>
+            <td class="state ${stateClass(r.estado)}">${esc(stateLabel(r.estado))}</td>
+            <td class="progress">${total?done+'/'+total:done}</td>
+            <td class="lap-highlight">${last===null?'—':fmt(last)}</td>
+            <td class="time">${fmt(r.tiempo_total_seg)}</td>
+            <td class="diff">${diff(r.diferencia_categoria_seg)}</td>
+            <td>${toggle}</td>`;
+          tbody.appendChild(tr);
+
+          if(laps.length){
+            const dr=document.createElement('tr');dr.className='details-row';dr.id=`detail-${id}`;
+            const lapHtml=laps.map((lap,i)=>{
+              const t=lap.tiempo_seg??lap.tiempo??null;
+              return `<div class="lap-chip"><strong>Vuelta ${i+1} · ${clock(lap.timestamp)}</strong><span>${fmt(t)}</span></div>`;
+            }).join('');
+            dr.innerHTML=`
+              <td class="details-cell" colspan="9">
+                <div class="details-grid">
+                  <div class="detail-card"><div class="detail-label">Salida</div><div class="detail-value">${clock(r.salida)}</div></div>
+                  <div class="detail-card"><div class="detail-label">Llegada / última evidencia</div><div class="detail-value">${clock(r.llegada||r.ultima_vuelta_timestamp)}</div></div>
+                  <div class="detail-card"><div class="detail-label">Vueltas restantes</div><div class="detail-value">${total?Math.max(total-done,0):'—'}</div></div>
+                </div>
+                <div class="detail-card" style="margin-top:12px">
+                  <div class="detail-label">Parciales de carrera</div>
+                  <div class="laps">${lapHtml}</div>
+                </div>
+              </td>`;
+            tbody.appendChild(dr);
+          }
+        });
+        categories.appendChild(block);
+      });
+    }
+
+    empty.style.display=filtered.length?'none':'block';
+    empty.textContent=rows.length?'No hay corredores que coincidan con el filtro.':'Esperando resultados...';
+
+    const e=payload?.evento||{};
+    const modeLabel=payload?.modalidad?String(payload.modalidad).toUpperCase():'';
+    eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${modeLabel?' · '+modeLabel:''}`;
+
+    updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
+
+    const isOfficial=payload?.status==='final'||(mode==='final'&&payload?.status==='final');
+    const isAuto=payload?.status==='auto_persisted'||payload?.persistencia_automatica===true;
+
+    official.style.display=isOfficial?'block':'none';
+    persisted.style.display=isAuto&&!isOfficial?'block':'none';
+    persisted.textContent=isAuto&&!isOfficial
+      ? `↻ Último estado guardado automáticamente · ${payload?.auto_persistido_en?clock(payload.auto_persistido_en):'respaldo persistente'}`
+      : '';
+    offline.style.display=(payload?.status==='offline')?'block':'none';
+
+    dot.classList.toggle('offline',!isOfficial&&payload?.estado_evento!=='en_vivo'&&!isAuto);
+    status.textContent=isOfficial?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':(isAuto?'ÚLTIMO ESTADO GUARDADO':'SIN CONEXIÓN'));
+    $('hero-title').textContent=isOfficial?'Resultados oficiales':(isAuto?'Último estado guardado':'Resultados en vivo');
+  }
+
+  document.addEventListener('click',e=>{
+    const btn=e.target.closest('.btn-detail'); if(!btn)return;
+    const row=$(btn.dataset.target); if(!row)return;
+    const open=row.classList.toggle('open');
+    btn.setAttribute('aria-expanded',open?'true':'false');
+    btn.textContent=open?'Ocultar vueltas':'Ver vueltas';
+  });
+
+  async function load(){
+    if(!slug){empty.textContent='Evento no especificado.';return}
+    try{
+      const endpoint=mode==='final'?`/api/public/final-event/${encodeURIComponent(slug)}`:`/api/public/live-event/${encodeURIComponent(slug)}`;
+      const r=await fetch(endpoint,{cache:'no-store'}); if(!r.ok) throw new Error(r.status);
+      payload=await r.json(); render();
+    }catch(err){
+      dot.classList.add('offline');status.textContent='SIN CONEXIÓN';
+      offline.style.display=mode==='live'?'block':'none';
+      // En /resultados, el backend puede entregar el último snapshot automático.
+      if(mode==='final'){
+        empty.textContent='No existe un resultado guardado disponible en este momento.';
+      }else{
+        empty.textContent='Esperando conexión con CronoAndes...';
+      }
+      empty.style.display='block';
+    }
+  }
+
+  search.addEventListener('input',render);
+  category.addEventListener('change',render);
+  load();
+  if(mode==='live')setInterval(load,5000);
+
+  const socket=io(window.location.origin,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity});
+  socket.on('connect',()=>{if(mode==='live')socket.emit('subscribe',{slug})});
+  socket.on('public_resultados',d=>{
+    if(mode==='live'){
+      payload=d;payload.evento=payload.evento||{};render();
+    }
+  });
 })();
 </script>
 </body>
 </html>"""
+
 
 
 @app.get("/")
