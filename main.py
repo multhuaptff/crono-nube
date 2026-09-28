@@ -740,6 +740,30 @@ def _lookup_laps_config(config, category):
     return 0
 
 
+def _is_downhill_modality(value):
+    """True cuando la modalidad corresponde a DH / Downhill."""
+    text_value = str(value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", text_value).strip()
+    tokens = set(normalized.split())
+    return "dh" in tokens or "downhill" in tokens
+
+
+def _payload_is_downhill(payload):
+    """Detecta DH desde el payload, incluyendo el evento anidado si existe."""
+    if not isinstance(payload, dict):
+        return False
+    event = payload.get("evento") if isinstance(payload.get("evento"), dict) else {}
+    return any(
+        _is_downhill_modality(value)
+        for value in (
+            payload.get("modalidad"),
+            payload.get("disciplina"),
+            event.get("modalidad"),
+            event.get("disciplina"),
+        )
+    )
+
+
 def enrich_public_results_payload(payload):
     """Completa el payload sin cambiar la fuente de verdad del cronometraje.
 
@@ -748,12 +772,18 @@ def enrich_public_results_payload(payload):
     payloads pueden traer `vueltas_totales=0`. Aquí recuperamos esa información
     desde la configuración pública de la etapa y, como mínimo, desde las
     vueltas realmente registradas.
+
+    Regla importante:
+      - DH/Downhill no es una disciplina de vueltas en este portal.
+      - Para DH no se fabrican `vueltas_totales` a partir de una configuración
+        accidental ni se muestran parciales por vuelta.
     """
     if not isinstance(payload, dict):
         return payload
 
     enriched = dict(payload)
     config_laps = enriched.get("vueltas_por_categoria") or {}
+    is_downhill = _payload_is_downhill(enriched)
     rows = []
 
     for raw in enriched.get("resultados") or []:
@@ -797,9 +827,17 @@ def enrich_public_results_payload(payload):
         except (TypeError, ValueError):
             reported_total = 0
 
-        # Nunca inventar vueltas: usamos la configuración si existe; si no,
-        # las vueltas realmente registradas sirven como mínimo.
-        total = max(reported_total, configured, completed)
+        if is_downhill:
+            # DH: salida -> llegada, sin vueltas.
+            clean_laps = []
+            completed = 0
+            configured = 0
+            reported_total = 0
+            total = 0
+        else:
+            # Nunca inventar vueltas: usamos la configuración si existe; si no,
+            # las vueltas realmente registradas sirven como mínimo.
+            total = max(reported_total, configured, completed)
 
         if total > 0:
             remaining = max(total - completed, 0)
@@ -1086,8 +1124,10 @@ def start_polling(event_code, server_url=None):
                     if signature != last_signature:
                         last_signature = signature
                         public_payload = dict(payload)
-                        if find_event_by_code(event_code):
+                        associated_event = find_event_by_code(event_code)
+                        if associated_event:
                             public_payload.pop("event_code", None)
+                            public_payload["evento"] = public_event_view(associated_event)
                         socketio.emit("public_resultados", public_payload, room=event_code)
                         socketio.emit(
                             "nuevo_tiempo",
@@ -2094,6 +2134,7 @@ linear-gradient(125deg,#061a2d 0,#0a2844 58%,#0b3955 100%);box-shadow:var(--shad
 .stat-label{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;font-weight:900}
 .stat-value{margin-top:5px;font-size:1.7rem;font-weight:950;letter-spacing:-.04em}
 .stat-note{margin-top:2px;color:#73849a;font-size:.74rem}
+#summary-laps{display:none}
 .toolbar{margin-top:17px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .toolbar input,.toolbar select{height:44px;border:1px solid var(--line);border-radius:13px;background:#fff;color:var(--ink);padding:0 14px;outline:none;box-shadow:0 6px 18px rgba(7,26,44,.035)}
 .toolbar input{min-width:280px;flex:1}
@@ -2205,7 +2246,7 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
         <div class="hero-meta">
           <span class="hero-chip">⚡ Actualización automática</span>
           <span class="hero-chip">🏆 Clasificación por categoría</span>
-          <span class="hero-chip">↻ Vueltas y parciales</span>
+          <span id="lap-chip" class="hero-chip">↻ Vueltas y parciales</span>
           <span class="hero-chip">✓ Datos persistentes</span>
         </div>
       </div>
@@ -2221,7 +2262,7 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
     <div class="stat"><div class="stat-label">Participantes</div><div id="s-part" class="stat-value">—</div><div class="stat-note">corredores registrados en resultados</div></div>
     <div class="stat"><div class="stat-label">En carrera</div><div id="s-race" class="stat-value">—</div><div class="stat-note">estado actual</div></div>
     <div class="stat"><div class="stat-label">Finalizados</div><div id="s-final" class="stat-value">—</div><div class="stat-note">con tiempo válido</div></div>
-    <div class="stat"><div class="stat-label">Vueltas</div><div id="s-laps" class="stat-value">—</div><div class="stat-note">pasadas registradas</div></div>
+    <div id="summary-laps" class="stat"><div class="stat-label">Vueltas</div><div id="s-laps" class="stat-value">—</div><div class="stat-note">pasadas registradas</div></div>
   </section>
 
   <div class="toolbar">
@@ -2234,7 +2275,7 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
     <div class="shell-head">
       <div>
         <div class="shell-title">Clasificación por categoría</div>
-        <div class="shell-caption">Elige un deportista para ver sus vueltas, parciales y evidencias horarias.</div>
+        <div id="shell-caption" class="shell-caption">Consulta los datos del evento.</div>
       </div>
     </div>
     <div id="categories"></div>
@@ -2275,11 +2316,50 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
   function diff(v){const n=num(v); if(n===null) return '—'; return n<=.000001?'LÍDER':'+'+fmt(n);}
   function stateClass(s){if(s==='Finalizado')return'final';if(s==='En curso')return'race';if(s==='DNF')return'dnf';if(s==='DNS'||s==='No iniciado')return'dns';return'';}
   function stateLabel(s){return s||'SIN ESTADO';}
-  function lapsOf(r){return Array.isArray(r.vueltas)?r.vueltas.filter(v=>v&&typeof v==='object'):[];}
-  function lapsTotal(r){const t=num(r.vueltas_totales)||0,d=lapsOf(r).length;return Math.max(t,d);}
-  function lapsDone(r){return lapsOf(r).length||num(r.vueltas_completadas)||0;}
+  function lapsOf(r){
+    return Array.isArray(r.vueltas)?r.vueltas.filter(v=>v&&typeof v==='object'):[];
+  }
+  function lapsTotal(r){
+    const t=num(r.vueltas_totales)||0,d=lapsOf(r).length;
+    return Math.max(t,d);
+  }
+  function lapsDone(r){
+    return lapsOf(r).length||num(r.vueltas_completadas)||0;
+  }
+  function modalityText(){
+    const e=payload?.evento||{};
+    return String(e.modalidad||payload?.modalidad||payload?.disciplina||'').trim().toLowerCase();
+  }
+  function isDownhill(){
+    const raw=modalityText().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const normalized=raw.replace(/[^a-z0-9]+/g,' ').trim();
+    const tokens=new Set(normalized.split(/\s+/).filter(Boolean));
+    return tokens.has('dh')||tokens.has('downhill');
+  }
+  function hasConfiguredLaps(){
+    const cfg=payload?.vueltas_por_categoria;
+    if(!cfg||typeof cfg!=='object') return false;
+    return Object.values(cfg).some(v=>{
+      if(v&&typeof v==='object'){
+        v=v.vueltas??v.vueltas_totales??v.total;
+      }
+      const n=Number(v);
+      return Number.isFinite(n)&&n>0;
+    });
+  }
+  function hasRecordedLaps(rows){
+    return rows.some(r=>lapsOf(r).length>0||Number(r.vueltas_completadas)>0);
+  }
+  function isLapEvent(rows){
+    // DH nunca muestra vueltas.
+    if(isDownhill()) return false;
+    // Solo mostramos vueltas/parciales si realmente existen o están
+    // configuradas en la etapa. Otras modalidades sin vueltas se presentan
+    // como una carrera Salida -> Llegada.
+    return hasRecordedLaps(rows)||hasConfiguredLaps();
+  }
 
-  function updateSummary(rows){
+  function updateSummary(rows,lapEvent){
     const final=rows.filter(r=>r.estado==='Finalizado');
     const race=rows.filter(r=>r.estado==='En curso');
     const lapCount=rows.reduce((a,r)=>a+lapsDone(r),0);
@@ -2287,11 +2367,18 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
     $('s-race').textContent=race.length;
     $('s-final').textContent=final.length;
     $('s-laps').textContent=lapCount;
+    $('summary-laps').style.display=lapEvent?'block':'none';
+    $('lap-chip').style.display=lapEvent?'inline-flex':'none';
   }
 
   function render(){
     const rows=payload?.resultados||[];
-    updateSummary(rows);
+    const lapEvent=isLapEvent(rows);
+    updateSummary(rows,lapEvent);
+
+    $('shell-caption').textContent=lapEvent
+      ? 'Consulta posición, vueltas, parciales y evidencias horarias.'
+      : 'Consulta salida, llegada y tiempo oficial de cada deportista.';
 
     const cats=[...new Set(rows.map(r=>r.categoria||'SIN CATEGORÍA'))].sort((a,b)=>a.localeCompare(b,'es'));
     const current=category.value;
@@ -2302,42 +2389,83 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
     const q=search.value.trim().toLowerCase();
     const selected=category.value;
     const filtered=rows.filter(r=>{
-      const dorsal=String(r.dorsal||'').toLowerCase(),name=String(r.nombre||'').toLowerCase(),club=String(r.club||'').toLowerCase(),cat=String(r.categoria||'SIN CATEGORÍA');
+      const dorsal=String(r.dorsal||'').toLowerCase();
+      const name=String(r.nombre||'').toLowerCase();
+      const club=String(r.club||'').toLowerCase();
+      const cat=String(r.categoria||'SIN CATEGORÍA');
       return (!q||dorsal.includes(q)||name.includes(q)||club.includes(q))&&(!selected||cat===selected);
     });
 
     categories.innerHTML='';
+    detailSeq=0;
+
     if(filtered.length){
       const grouped={};
       filtered.forEach(r=>{const cat=r.categoria||'SIN CATEGORÍA';(grouped[cat]??=[]).push(r)});
       Object.keys(grouped).sort((a,b)=>a.localeCompare(b,'es')).forEach(cat=>{
-        const block=document.createElement('section');block.className='category-block';
+        const block=document.createElement('section');
+        block.className='category-block';
         const list=grouped[cat];
         const finished=list.filter(r=>r.estado==='Finalizado').length;
         const inRace=list.filter(r=>r.estado==='En curso').length;
+
+        const headers=lapEvent
+          ? '<th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Vueltas</th><th>Última vuelta</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Detalle</th>'
+          : '<th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Salida</th><th>Llegada</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Dif. General</th>';
 
         block.innerHTML=`
           <div class="category-head">
             <div class="category-title-wrap">
               <span class="category-accent"></span>
-              <div><div class="category-title">${esc(cat)}</div>
-              <div class="category-meta">${list.length} participantes · ${finished} finalizados · ${inRace} en carrera</div></div>
+              <div>
+                <div class="category-title">${esc(cat)}</div>
+                <div class="category-meta">${list.length} participantes · ${finished} finalizados · ${inRace} en carrera</div>
+              </div>
             </div>
           </div>
           <div class="table-wrap"><table>
-            <thead><tr>
-              <th>Pos.</th><th>Dorsal</th><th>Deportista</th><th>Estado</th><th>Vueltas</th><th>Última vuelta</th><th>Tiempo total</th><th>Dif. Cat.</th><th>Detalle</th>
-            </tr></thead><tbody></tbody>
+            <thead><tr>${headers}</tr></thead><tbody></tbody>
           </table></div>`;
+
         const tbody=block.querySelector('tbody');
 
         list.forEach(r=>{
-          const id=++detailSeq, laps=lapsOf(r), total=lapsTotal(r), done=lapsDone(r);
-          const last=num(r.ultima_vuelta_seg);
           const position=r.puesto_categoria??r.puesto_general??'—';
-          const toggle=laps.length?`<button class="btn-detail" data-target="detail-${id}" aria-expanded="false">Ver vueltas</button>`:'<span class="category-meta">—</span>';
 
-          const tr=document.createElement('tr');tr.className='main-row';
+          if(!lapEvent){
+            // DH / carreras sin vueltas: la información principal es
+            // salida, llegada y tiempo total. No se muestra ninguna columna
+            // de vueltas ni "tiempo por vuelta".
+            const tr=document.createElement('tr');
+            tr.className='main-row';
+            tr.innerHTML=`
+              <td><strong>${position}</strong></td>
+              <td class="dorsal">${esc(r.dorsal||'')}</td>
+              <td class="name">
+                <div class="name-main">${esc(r.nombre||'Sin nombre')}</div>
+                ${r.club?`<span class="club">${esc(r.club)}</span>`:''}
+              </td>
+              <td class="state ${stateClass(r.estado)}">${esc(stateLabel(r.estado))}</td>
+              <td class="time">${clock(r.salida)}</td>
+              <td class="time">${clock(r.llegada)}</td>
+              <td class="time">${fmt(r.tiempo_total_seg)}</td>
+              <td class="diff">${diff(r.diferencia_categoria_seg)}</td>
+              <td class="diff">${diff(r.diferencia_general_seg)}</td>`;
+            tbody.appendChild(tr);
+            return;
+          }
+
+          const id=++detailSeq;
+          const laps=lapsOf(r);
+          const total=lapsTotal(r);
+          const done=lapsDone(r);
+          const last=num(r.ultima_vuelta_seg);
+          const toggle=laps.length
+            ? `<button class="btn-detail" data-target="detail-${id}" aria-expanded="false">Ver vueltas</button>`
+            : '<span class="category-meta">Sin parciales</span>';
+
+          const tr=document.createElement('tr');
+          tr.className='main-row';
           tr.innerHTML=`
             <td><strong>${position}</strong></td>
             <td class="dorsal">${esc(r.dorsal||'')}</td>
@@ -2354,11 +2482,14 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
           tbody.appendChild(tr);
 
           if(laps.length){
-            const dr=document.createElement('tr');dr.className='details-row';dr.id=`detail-${id}`;
+            const dr=document.createElement('tr');
+            dr.className='details-row';
+            dr.id=`detail-${id}`;
             const lapHtml=laps.map((lap,i)=>{
               const t=lap.tiempo_seg??lap.tiempo??null;
               return `<div class="lap-chip"><strong>Vuelta ${i+1} · ${clock(lap.timestamp)}</strong><span>${fmt(t)}</span></div>`;
             }).join('');
+
             dr.innerHTML=`
               <td class="details-cell" colspan="9">
                 <div class="details-grid">
@@ -2374,6 +2505,7 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
             tbody.appendChild(dr);
           }
         });
+
         categories.appendChild(block);
       });
     }
@@ -2382,9 +2514,8 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
     empty.textContent=rows.length?'No hay corredores que coincidan con el filtro.':'Esperando resultados...';
 
     const e=payload?.evento||{};
-    const modeLabel=payload?.modalidad?String(payload.modalidad).toUpperCase():'';
+    const modeLabel=String(e.modalidad||payload?.modalidad||payload?.disciplina||'').toUpperCase();
     eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${modeLabel?' · '+modeLabel:''}`;
-
     updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
 
     const isOfficial=payload?.status==='final'||(mode==='final'&&payload?.status==='final');
@@ -2438,7 +2569,8 @@ footer{margin-top:30px;padding-top:20px;border-top:1px solid var(--line);display
   socket.on('connect',()=>{if(mode==='live')socket.emit('subscribe',{slug})});
   socket.on('public_resultados',d=>{
     if(mode==='live'){
-      payload=d;payload.evento=payload.evento||{};render();
+      payload={...d,evento:d?.evento||payload?.evento||{}};
+      render();
     }
   });
 })();
