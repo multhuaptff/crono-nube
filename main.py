@@ -98,6 +98,13 @@ RESULTS_DIR = os.environ.get(
     "RESULTS_DIR", "resultados_cronoandes"
 ).strip().strip("/")
 
+# Persistencia automática del último estado LIVE.
+# Solo este main.py se modifica: no requiere cambios en local_server.py.
+AUTO_RESULTS_DIR = os.environ.get(
+    "AUTO_RESULTS_DIR", f"{RESULTS_DIR}/_auto"
+).strip().strip("/")
+AUTO_PERSIST_INTERVAL = max(5, int(os.environ.get("AUTO_PERSIST_INTERVAL", "10")))
+
 PUBLIC_BASE_URL = (
     os.environ.get("PUBLIC_BASE_URL", "").strip()
     or os.environ.get("PUBLIC_CLOUD_URL", "").strip()
@@ -703,6 +710,124 @@ def github_result_path(event_code):
     return str(PurePosixPath(RESULTS_DIR) / filename)
 
 
+def github_auto_result_path(event_code):
+    filename = f"{safe_event_code(event_code)}.json"
+    return str(PurePosixPath(AUTO_RESULTS_DIR) / filename)
+
+
+def _payload_result_signature(payload):
+    """Firma estable para detectar cambios reales en los resultados.
+
+    Ignora timestamps de polling que cambian aunque no haya nuevos tiempos.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    stable = dict(payload)
+    stable.pop("actualizado_en", None)
+    stable.pop("server_time", None)
+    return json.dumps(
+        stable,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def save_auto_snapshot(event_code, payload):
+    """Guarda automáticamente el último estado LIVE en GitHub.
+
+    No convierte el evento en oficial ni cambia su estado en el catálogo.
+    Es un respaldo persistente para que el último resultado sobreviva al
+    cierre de CronoAndes local o a una caída temporal del túnel.
+    """
+    if not RESULTS_GITHUB_TOKEN:
+        return False, "RESULTS_GITHUB_TOKEN no configurado."
+
+    event_code = str(event_code or "").strip()
+    if not event_code or not isinstance(payload, dict):
+        return False, "event_code o payload inválido."
+
+    path = github_auto_result_path(event_code)
+    api_url = (
+        f"https://api.github.com/repos/{RESULTS_REPO_OWNER}/{RESULTS_REPO_NAME}/contents/"
+        f"{quote(path, safe='/')}"
+    )
+
+    snapshot = dict(payload)
+    snapshot["event_code"] = event_code
+    snapshot["publicacion_activa"] = False
+    snapshot["status"] = "auto_persisted"
+    snapshot["tipo_publicacion"] = "automatico"
+    snapshot["auto_persistido_en"] = now_iso()
+    snapshot["actualizado_en"] = now_iso()
+
+    document = json.dumps(json_safe(snapshot), ensure_ascii=False, indent=2)
+    content_b64 = base64.b64encode(document.encode("utf-8")).decode("ascii")
+    headers = github_api_headers()
+
+    try:
+        with github_write_lock:
+            existing = requests.get(api_url, headers=headers, timeout=10)
+            sha = None
+            if existing.status_code == 200:
+                sha = existing.json().get("sha")
+            elif existing.status_code != 404:
+                return False, f"GitHub GET snapshot automático devolvió {existing.status_code}."
+
+            body = {
+                "message": f"Autoguardar LIVE CronoAndes {event_code}",
+                "content": content_b64,
+                "branch": "main",
+            }
+            if sha:
+                body["sha"] = sha
+
+            response = requests.put(
+                api_url,
+                headers=headers,
+                json=body,
+                timeout=15,
+            )
+
+        if response.status_code not in (200, 201):
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text[:500]
+            return False, f"GitHub rechazó el autoguardado: {detail}"
+
+        return True, {
+            "path": path,
+            "raw_url": (
+                f"https://raw.githubusercontent.com/{RESULTS_REPO_OWNER}/"
+                f"{RESULTS_REPO_NAME}/main/{path}"
+            ),
+            "saved_at": snapshot["auto_persistido_en"],
+        }
+    except requests.RequestException as exc:
+        return False, f"Error escribiendo snapshot automático: {exc}"
+
+
+def load_auto_snapshot(event_code):
+    path = github_auto_result_path(event_code)
+    raw_url = (
+        f"https://raw.githubusercontent.com/{RESULTS_REPO_OWNER}/"
+        f"{RESULTS_REPO_NAME}/main/{path}"
+    )
+    try:
+        response = requests.get(
+            raw_url, timeout=8, headers={"Cache-Control": "no-cache"}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict):
+                return data
+    except (requests.RequestException, ValueError) as exc:
+        logging.warning("Error leyendo snapshot automático %s: %s", event_code, exc)
+    return None
+
+
 def save_final_snapshot(event_code, payload):
     if not RESULTS_GITHUB_TOKEN:
         return False, "RESULTS_GITHUB_TOKEN no configurado."
@@ -810,6 +935,8 @@ def start_polling(event_code, server_url=None):
 
     def poll():
         last_signature = None
+        last_persist_signature = None
+        last_persist_at = 0.0
 
         while state["active"]:
             try:
@@ -824,6 +951,8 @@ def start_polling(event_code, server_url=None):
                         sort_keys=True,
                         separators=(",", ":"),
                     )
+
+                    # Emisión en vivo: conserva el comportamiento existente.
                     if signature != last_signature:
                         last_signature = signature
                         public_payload = dict(payload)
@@ -835,6 +964,46 @@ def start_polling(event_code, server_url=None):
                             public_payload.get("resultados", []),
                             room=event_code,
                         )
+
+                    # ========================================================
+                    # AUTOPERSISTENCIA: solo main.py, sin tocar local_server.py
+                    # Guarda el último estado cuando realmente cambian los
+                    # resultados y limita las escrituras a GitHub.
+                    # ========================================================
+                    persist_signature = _payload_result_signature(payload)
+                    persist_interval_ok = (
+                        last_persist_at <= 0
+                        or (time.time() - last_persist_at) >= AUTO_PERSIST_INTERVAL
+                    )
+                    estado_evento = str(payload.get("estado_evento") or "").lower()
+                    debe_guardar = (
+                        persist_signature
+                        and persist_signature != last_persist_signature
+                        and persist_interval_ok
+                    )
+
+                    # Si el emisor ya marca el evento como finalizado, guardar
+                    # inmediatamente el último estado, sin esperar el intervalo.
+                    if estado_evento == "finalizado" and persist_signature != last_persist_signature:
+                        debe_guardar = True
+
+                    if debe_guardar:
+                        ok, detail = save_auto_snapshot(event_code, payload)
+                        if ok:
+                            last_persist_signature = persist_signature
+                            last_persist_at = time.time()
+                            logging.info(
+                                "💾 Autoguardado LIVE persistente: %s | %s",
+                                event_code,
+                                detail.get("path") if isinstance(detail, dict) else detail,
+                            )
+                        else:
+                            logging.warning(
+                                "⚠️ No se pudo autoguardar LIVE %s: %s",
+                                event_code,
+                                detail,
+                            )
+
                 socketio.sleep(polling_interval)
 
             except Exception as exc:
@@ -1020,12 +1189,29 @@ def api_public_live_event(slug):
         return jsonify({"status": "not_found", "message": "Evento no encontrado."}), 404
     event_code = str(event.get("event_code", "")).strip()
     payload = fetch_public_results(event_code, server_url=event.get("server_url"))
+
     if not payload:
+        # El CronoAndes local puede haberse cerrado o el túnel puede haber
+        # caído. En ese caso, mostrar el último estado persistido automáticamente.
+        auto_payload = load_auto_snapshot(event_code)
+        if auto_payload:
+            auto_payload = dict(auto_payload)
+            auto_payload.pop("event_code", None)
+            auto_payload["evento"] = public_event_view(event)
+            auto_payload["status"] = "auto_persisted"
+            auto_payload["persistencia_automatica"] = True
+            auto_payload["mensaje_persistencia"] = (
+                "Mostrando el último estado guardado automáticamente. "
+                "El CronoAndes local no está transmitiendo en este momento."
+            )
+            return jsonify(auto_payload)
+
         return jsonify({
             "status": "offline",
             "evento": public_event_view(event),
             "message": "CronoAndes no está transmitiendo resultados en este momento.",
         }), 503
+
     payload = dict(payload)
     payload.pop("event_code", None)
     payload["evento"] = public_event_view(event)
@@ -1041,25 +1227,41 @@ def api_public_final_event(slug):
     event_code = str(event.get("event_code", "")).strip()
     payload = load_final_snapshot(event_code)
 
-    if not payload:
-        return jsonify({
-            "status": "not_found",
-            "evento": public_event_view(event),
-            "message": "No existe un resultado oficial publicado.",
-        }), 404
+    # Primero se respeta la publicación oficial existente.
+    if payload and payload.get("publicacion_activa", False):
+        payload = dict(payload)
+        payload.pop("event_code", None)
+        payload["evento"] = public_event_view(event)
+        payload["status"] = "final"
+        return jsonify(payload)
 
-    if not payload.get("publicacion_activa", False):
+    # Si todavía no existe una publicación oficial, ofrecer el último
+    # estado guardado automáticamente. NO se marca como resultado oficial.
+    auto_payload = load_auto_snapshot(event_code)
+    if auto_payload:
+        auto_payload = dict(auto_payload)
+        auto_payload.pop("event_code", None)
+        auto_payload["evento"] = public_event_view(event)
+        auto_payload["status"] = "auto_persisted"
+        auto_payload["persistencia_automatica"] = True
+        auto_payload["mensaje_persistencia"] = (
+            "Último estado guardado automáticamente. "
+            "El resultado todavía no ha sido publicado como oficial."
+        )
+        return jsonify(auto_payload)
+
+    if payload and not payload.get("publicacion_activa", False):
         return jsonify({
             "status": "not_published",
             "evento": public_event_view(event),
             "message": "La publicación oficial fue retirada.",
         }), 404
 
-    payload = dict(payload)
-    payload.pop("event_code", None)
-    payload["evento"] = public_event_view(event)
-    payload["status"] = "final"
-    return jsonify(payload)
+    return jsonify({
+        "status": "not_found",
+        "evento": public_event_view(event),
+        "message": "No existe un resultado guardado para este evento.",
+    }), 404
 
 
 # ---------- Compatibilidad legacy ----------
@@ -1080,21 +1282,28 @@ def api_public_live(event_code):
 def api_public_final(event_code):
     payload = load_final_snapshot(event_code)
 
-    if not payload:
-        return jsonify({
-            "status": "not_found",
-            "event_code": event_code,
-            "message": "No existe un resultado oficial publicado.",
-        }), 404
+    if payload and payload.get("publicacion_activa", False):
+        return jsonify(payload)
 
-    if not payload.get("publicacion_activa", False):
+    auto_payload = load_auto_snapshot(event_code)
+    if auto_payload:
+        auto_payload = dict(auto_payload)
+        auto_payload["status"] = "auto_persisted"
+        auto_payload["persistencia_automatica"] = True
+        return jsonify(auto_payload)
+
+    if payload and not payload.get("publicacion_activa", False):
         return jsonify({
             "status": "not_published",
             "event_code": event_code,
             "message": "La publicación oficial fue retirada.",
         }), 404
 
-    return jsonify(payload)
+    return jsonify({
+        "status": "not_found",
+        "event_code": event_code,
+        "message": "No existe un resultado guardado para este evento.",
+    }), 404
 
 
 @app.get("/api/inscritos/<event_code>")
@@ -1932,12 +2141,16 @@ footer{margin-top:36px;padding-top:22px;border-top:1px solid var(--line);display
      const e=payload?.evento||{};
      eventInfo.textContent=`${e.nombre||'Evento CronoAndes'}${e.etapa_id||e.etapa?' · Etapa '+(e.etapa_id||e.etapa):''}${e.modalidad?' · '+e.modalidad:''}`;
      updated.textContent='Última actualización: '+(payload?.actualizado_en||payload?.publicado_en||'—');
-     const isFinal=mode==='final'||payload?.status==='final'||e.estado==='finalizado';
-     official.style.display=isFinal?'block':'none';offline.style.display=(payload?.status==='offline')?'block':'none';dot.classList.toggle('offline',!isFinal&&payload?.estado_evento!=='en_vivo');status.textContent=isFinal?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':'SIN CONEXIÓN');
+     const isOfficial=payload?.status==='final'||(mode==='final'&&payload?.status==='final')||e.estado==='finalizado'&&payload?.status==='final';
+     const isAutoPersisted=payload?.status==='auto_persisted'||payload?.persistencia_automatica===true;
+     official.style.display=isOfficial?'block':'none';
+     offline.style.display=(payload?.status==='offline')?'block':'none';
+     dot.classList.toggle('offline',!isOfficial&&payload?.estado_evento!=='en_vivo'&&!isAutoPersisted);
+     status.textContent=isOfficial?'RESULTADOS OFICIALES':(payload?.estado_evento==='en_vivo'?'EN VIVO':(isAutoPersisted?'ÚLTIMO ESTADO GUARDADO':'SIN CONEXIÓN'));
  }
  async function load(){
    if(!slug){empty.textContent='Evento no especificado.';return}
-   try{const endpoint=mode==='final'?`/api/public/final-event/${encodeURIComponent(slug)}`:`/api/public/live-event/${encodeURIComponent(slug)}`;const r=await fetch(endpoint,{cache:'no-store'});if(!r.ok)throw new Error(r.status);payload=await r.json();render()}catch(err){dot.classList.add('offline');status.textContent='SIN CONEXIÓN';offline.style.display=mode==='live'?'block':'none';empty.textContent=mode==='live'?'Esperando conexión con CronoAndes...':'No existe un resultado oficial publicado.';empty.style.display='block'}}
+   try{const endpoint=mode==='final'?`/api/public/final-event/${encodeURIComponent(slug)}`:`/api/public/live-event/${encodeURIComponent(slug)}`;const r=await fetch(endpoint,{cache:'no-store'});if(!r.ok)throw new Error(r.status);payload=await r.json();render()}catch(err){dot.classList.add('offline');status.textContent='SIN CONEXIÓN';offline.style.display=mode==='live'?'block':'none';empty.textContent=mode==='live'?'Esperando conexión con CronoAndes...':'No existe un resultado guardado.';empty.style.display='block'}}
  search.addEventListener('input',render);category.addEventListener('change',render);load(); if(mode==='live')setInterval(load,5000);
  const socket=io(window.location.origin,{transports:['websocket','polling'],reconnection:true,reconnectionAttempts:Infinity}); socket.on('connect',()=>{if(mode==='live')socket.emit('subscribe',{slug})});socket.on('public_resultados',d=>{if(mode==='live'){payload=d;payload.evento=payload.evento||{};render()}});
 })();
